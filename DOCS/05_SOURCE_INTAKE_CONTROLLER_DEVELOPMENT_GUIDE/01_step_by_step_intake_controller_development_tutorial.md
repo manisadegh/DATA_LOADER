@@ -1,8 +1,8 @@
-# Step-by-Step Tutorial: Developing a Custom Source-Specific Intake Controller
+# Step-by-Step Tutorial: Developing Source-Specific Intake Controllers
 
-This tutorial provides an authoritative, end-to-end guide on creating and deploying a new source-specific intake controller within the **DATA_LOADER** enterprise framework.
+This tutorial provides an authoritative, end-to-end developer guide for onboarding new data sources and creating custom intake controllers within the **DATA_LOADER** enterprise framework.
 
-Using the **Phase 04 Pluggable Intake Architecture** (`dataloader_core.intake`), integrating an upstream data source (such as **SAP ERP**, **Salesforce CRM**, **Workday**, or custom third-party feeds) requires minimal boilerplate while automatically benefiting from the platform's enterprise guarantees:
+Using the **Phase 04 Pluggable Intake Architecture** (`dataloader_core.intake`), integrating an upstream data source (such as **Oracle Fusion BICC**, **SAP ERP**, **Salesforce CRM**, **Workday**, **NetSuite**, or proprietary feeds) requires minimal code while automatically benefiting from the platform's enterprise guarantees:
 - **FIFO Chronological Queue Scheduling** (oldest extract processed first).
 - **File Stability Sentry** (settling window protecting against partial/in-flight transfers).
 - **In-Memory Zero-Disk Header Extraction** (reading `.csv`, `.pecsv`, `.zip`, `.gz` headers without uncompressing to disk).
@@ -23,23 +23,23 @@ The `DATA_LOADER` platform enforces a strict separation of concerns across three
 flowchart TD
     subgraph Tier1["Tier 1: Intake Producer (Pure Flat-File Producer)"]
         direction TB
-        DZ["DROP_ZONE/&lt;SOURCE&gt;/"] --> Sentry["File Stability Sentry<br/>(&gt;0 bytes, stable size)"]
+        DZ["DROP_ZONE/<SOURCE>/"] --> Sentry["File Stability Sentry<br/>(>0 bytes, stable size)"]
         Sentry --> Disc["Plugin Batch Discovery<br/>(SourceIntakePlugin)"]
         Disc --> Mem["In-Memory Header Reader<br/>(CSV / PECSV / ZIP / GZ)"]
-        Mem --> MD5["MD5 Checksum &amp; Descriptor Factory"]
+        Mem --> MD5["MD5 Checksum & Descriptor Factory"]
         MD5 --> Staging[".staging_* Atomic Packaging"]
         Staging --> Publish["Atomic Publish to LANDING_ZONE"]
     end
 
     subgraph Tier2["Tier 2: Ingestion Orchestrator (Multi-Batch Consumer)"]
         direction TB
-        LZ["LANDING_ZONE/&lt;SOURCE&gt;/"] --> Sensor["scan_landing_queue (FIFO Sort)"]
+        LZ["LANDING_ZONE/<SOURCE>/"] --> Sensor["scan_landing_queue (FIFO Sort)"]
         Sensor --> Unpack["Unpack Capsule to LOADING_ZONE SAS"]
         Unpack --> FastPath["O(1) Verification via batch_descriptor.json"]
         FastPath --> Guard["Just-In-Time Schema Guard<br/>(DBC.ColumnsV Auto-DDL)"]
         Guard --> SlotGov["UtilitySlotGovernor<br/>(Bounded Utility Slots #01..#08)"]
         SlotGov --> Threads["ThreadPool Parallel Entity Workers"]
-        Threads --> Post["Post-Ingestion Tasks (Source &amp; Global)"]
+        Threads --> Post["Post-Ingestion Tasks (Source & Global)"]
         Post --> Archive["Archive Batch Capsule in ARCHIVE_ZONE"]
     end
 
@@ -58,37 +58,353 @@ flowchart TD
 
 ### 1.2 Golden Rules for Intake Controllers
 
-When developing a new intake controller, you **must adhere to these core principles**:
+When developing or configuring any intake controller, you **must adhere to these core principles**:
 
 > [!IMPORTANT]
 > **Golden Rules of Tier 1 Intake Controllers:**
 > 1. **Zero Teradata Database Dependency**: Never import `teradatasql` or connect to Teradata in Tier 1. Database table state, DDL auto-migration, and lock tracking belong strictly to the Orchestrator (Tier 2).
 > 2. **FAIL_STOP Execution Semantics**: Never swallow errors. If a file is unstable, truncated, missing, or if Orchestrator delegation fails with exit code `> 0`, abort the run immediately.
 > 3. **Single Responsibility**: An intake controller is a **stateless producer**. Its only job is to discover raw arrival files, validate stability, extract header columns in memory, calculate checksums once, package atomic capsules into `LANDING_ZONE/<SOURCE>/`, and optionally trigger the Orchestrator.
-> 4. **Entrypoint Simplicity**: Keep the CLI entrypoint script under **80 lines of code** by delegating all logic to `dataloader_core.intake.BaseIntakeController`.
+> 4. **Entrypoint Simplicity**: Keep any CLI entrypoint script strictly under **80 lines of code** by delegating all logic to `dataloader_core.intake.BaseIntakeController`.
 > 5. **POSIX Standard**: Ensure strict Unix line endings (**LF only**, `CRLF = 0`, `BOM = 0`).
 
 ---
 
 ## 2. Choosing Your Intake Implementation Strategy
 
-Before writing code, decide which implementation strategy fits your source feed:
+The framework provides three distinct implementation strategies tailored to different source formats, operational requirements, and lifecycle needs.
 
-| Strategy | When to Use | Development Effort | Key Component |
-|:---|:---|:---:|:---|
-| **Strategy A: Built-in Plugin (No-Code)** | Source provides standard manifests (`MANIFEST_<SRC>_<TS>_<ID>.MF`) or drops files without manifests. | **0 Python lines** (Config only) | `"intake_plugin": "standard_manifest"` or `"manifestless"` in `config.json`. |
-| **Strategy B: Custom Intake Plugin** | Source exports custom manifests (e.g. JSON metadata, XML descriptors, SAP IDoc control files, or non-standard manifest filenames). | **~40–80 Python lines** | Subclass `SourceIntakePlugin` and register via `@PluginRegistry.register`. |
-| **Strategy C: Dedicated Standalone Controller** | Source requires dedicated supervisor CLI, custom pre-intake API polling (e.g. REST API download prior to drop), or custom CLI flags. | **~60–100 Python lines** | Dedicated folder, subclass `BaseIntakeController`, thin CLI entrypoint. |
+### 2.1 The 3 Architectural Strategies
+
+```mermaid
+flowchart TD
+    Start(["New Upstream Source to Ingest"]) --> Q1{"Does upstream provide standard manifests<br/>(MANIFEST_*.MF) or drop files without manifest?"}
+    
+    Q1 -- Yes --> StratA["Strategy A: Built-in Plugin<br/><b>Zero-Code (Config Only)</b><br/>• Use 'standard_manifest' or 'manifestless'<br/>• Set 9-column entity mapping<br/>• Run existing feeder CLI"]
+    
+    Q1 -- No --> Q2{"Does source have custom manifest format<br/>(JSON / XML / custom delimiter)<br/>but standard ingestion lifecycle?"}
+    
+    Q2 -- Yes --> StratB["Strategy B: Custom Intake Plugin<br/><b>Low-Code (~40-60 lines)</b><br/>• Subclass SourceIntakePlugin<br/>• Register via PluginRegistry.register<br/>• Reuse existing centralized feeder CLI"]
+    
+    Q2 -- No (Unique lifecycle, custom flags, or isolated repo) --> StratC["Strategy C: Dedicated Standalone Controller<br/><b>Modular Component (~80-120 lines)</b><br/>• Dedicated folder & git repo<br/>• Subclass BaseIntakeController<br/>• Dedicated thin CLI entrypoint (&lt; 80 lines)"]
+```
+
+### 2.2 In-Depth Decision Matrix & Selection Criteria
+
+Review the table below to select the optimal strategy for your upstream source:
+
+| Dimension | Strategy A: Built-in Plugin | Strategy B: Custom Intake Plugin | Strategy C: Dedicated Controller |
+|:---|:---|:---|:---|
+| **Primary Use Case** | Sources dropping standardized `.MF` manifests or plain CSV/ZIP files without manifests. | Sources providing proprietary manifest files (e.g., JSON, XML, pipe/semicolon metadata), but standard CLI lifecycle. | Complex enterprise sources requiring dedicated microservice packaging, bespoke CLI arguments, or separate Git repo. |
+| **Code Required** | **0 lines** of Python *(Configuration only)*. | **~40–60 lines** of Python *(Single plugin class)*. | **~80–120 lines** of Python *(Plugin + Service + CLI)*. |
+| **Key Framework Components** | `StandardManifestIntakePlugin` or `ManifestlessDropIntakePlugin`. | Subclass `SourceIntakePlugin` registered in `PluginRegistry`. | Subclass `BaseIntakeController` with dedicated `feeder.py` entrypoint. |
+| **Upstream Manifest Pattern** | `MANIFEST_<SRC>_<TS>_<ID>.MF` or no manifest at all (`.csv`, `.zip`, `.gz`). | `*.json`, `*.xml`, `*.ctl`, non-standard `.txt`, or nested manifest metadata. | Proprietary manifests + custom pre-intake REST API polling, FTP triggers, or bespoke flags. |
+| **Deployment Footprint** | Shared deployment under existing controller. | Single plugin file added to `dataloader_core/intake/` or custom module. | Dedicated component directory (e.g. `PROCESSING_TOOLS/<SRC>_INTAKE_CONTROLLER/`). |
+| **CLI Entrypoint** | Existing `feeder.py --source <SRC>`. | Existing `feeder.py --source <SRC>`. | Dedicated `feeder.py` (`< 80` lines) in component folder. |
+| **Concurrency Lock** | Dynamic `.feeder_<SRC>.pid`. | Dynamic `.feeder_<SRC>.pid`. | Dedicated `.feeder_<SRC>.pid`. |
+| **Teradata Database Impact** | **Zero** (Pure Producer). | **Zero** (Pure Producer). | **Zero** (Pure Producer). |
+| **Typical Source Examples** | **NetSuite**, **Salesforce Drops**, **CRM Standard**, flat SFTP landing. | **Workday (JSON)**, **Coupa (XML)**, **Custom REST Export**. | **Oracle Fusion BICC**, **SAP ERP**, **Legacy Mainframe**. |
+
+### 2.3 Deciding Conditions & Trade-Offs
+
+#### Adopt Strategy A when:
+1. Upstream drops files accompanied by a manifest matching the standard format:
+   `MANIFEST_<SOURCE>_<TIMESTAMP>_<BATCH_ID>.MF` containing `filename,checksum` (comma, tab, or pipe delimited).
+2. Upstream deposits plain data files (`.csv`, `.zip`, `.gz`) directly into `DROP_ZONE/<SOURCE>/` **without any manifest**. The built-in `manifestless` plugin automatically discovers files, groups them by timestamp, and computes MD5 checksums.
+3. You want zero code maintenance and rapid onboarding in under 15 minutes.
+
+#### Adopt Strategy B when:
+1. Upstream delivers a non-standard manifest format, such as:
+   - A JSON metadata file (e.g., `batch_metadata.json` or `export_manifest.json`).
+   - An XML control descriptor (e.g., `batch_manifest.xml`).
+   - A non-standard filename convention (e.g., `EXPORT_<ID>_<TS>.ctl`).
+2. You do **not** need custom command-line arguments or separate deployment pipelines. You simply want the existing `feeder.py` CLI to recognize and parse the source using the pluggable registry.
+
+#### Adopt Strategy C when:
+1. The integration requires an independent Git repository, dedicated versioning (`v1.0.0`, `v2.0.0`), and separate production release cycles.
+2. The source requires bespoke command-line flags (e.g., `--pre-fetch-api`, `--validate-accounting-period`) or pre-intake REST API polling prior to file staging.
+3. The enterprise team responsible for the source operates independently from other source teams.
 
 ---
 
-## 3. Step-by-Step Implementation: Building a Dedicated Intake Controller
+## 3. Strategy A Walkthrough: Built-in Plugin (Zero-Code / Configuration Only)
 
-In this tutorial, we will implement a production-grade intake controller for an enterprise source: **`SAP_ERP`**.
+In this walkthrough, we onboard **`NETSUITE`** (using the built-in `standard_manifest` plugin) and demonstrate how **`SALESFORCE`** can be onboarded with `manifestless`.
 
-### Overview of the `SAP_ERP` Source Contract:
+### Scenario Overview:
+- **Source Code**: `NETSUITE`
+- **Drop Format**: CSV files accompanied by standard manifests: `MANIFEST_NETSUITE_20261023_100000_101.MF`.
+- **Target Tables**: `NETSUITE_TRANSACTION`, `NETSUITE_CUSTOMER`.
+- **Python Lines to Write**: **0 lines**.
+
+---
+
+### Step A1: Storage Tier Setup & Partitioning
+
+Create the partitioned storage directories under `DATA/` and `LOGS/`:
+
+```bash
+cd /sg/local/sid/home/Dsidadm/DATA_LOADER
+
+# Create partitioned storage zones for NETSUITE
+mkdir -p DATA/DROP_ZONE/NETSUITE
+mkdir -p DATA/LANDING_ZONE/NETSUITE
+mkdir -p DATA/LOADING_ZONE/NETSUITE
+mkdir -p DATA/ARCHIVE_ZONE/NETSUITE
+mkdir -p LOGS/NETSUITE
+
+# Ensure appropriate permissions
+chmod 775 DATA/*_ZONE/NETSUITE LOGS/NETSUITE
+```
+
+---
+
+### Step A2: Configure Entity Routing (`CONFIG/entity_mapping.csv`)
+
+Add the entity routing definitions to [`CONFIG/entity_mapping.csv`](file:///C:/Users/P992860/data_loader/DATA_LOADER/CONFIG/entity_mapping.csv) using the 9-column format:
+
+```csv
+SOURCE,TARGET_TABLE,FILE_SIGNATURE,EXTENSION,INNER_EXTENSION,DELIMITER,LOAD_MODE,SKIP_ROWS,HEADER_MODE
+NETSUITE,NETSUITE_TRANSACTION,tran,".csv,.zip",.csv,",",replace,1,every_file
+NETSUITE,NETSUITE_CUSTOMER,cust,".csv,.zip",.csv,",",append,1,every_file
+```
+
+---
+
+### Step A3: Declarative Configuration (`config.json`)
+
+Create or update the configuration file (e.g., `CONFIG/config_netsuite.json` or within an existing controller):
+
+```json
+{
+  "feeder": {
+    "source_system_code": "NETSUITE",
+    "intake_plugin": "standard_manifest",
+    "drop_zone": "../../DATA/DROP_ZONE",
+    "logs_dir": "../../LOGS",
+    "file_stability_window_seconds": 3,
+    "entity_mapping_file": "../../CONFIG/entity_mapping.csv",
+    "concurrency": {
+      "poll_interval_seconds": 5,
+      "lock_timeout_seconds": 7200
+    }
+  },
+  "schema_guard": {
+    "auto_migrate_ddl": true,
+    "target_database": "${TDENV}SIDFINSTG",
+    "technical_database": "${TDENV}SIDFINTCH"
+  },
+  "orchestrator": {
+    "orchestrator_dir": "../DATA_INGESTION_ORCHESTRATOR",
+    "config_file": "config.json",
+    "landing_zone": "../../DATA/LANDING_ZONE",
+    "python_executable": "python3",
+    "trigger_orchestrator": true
+  }
+}
+```
+
+> [!TIP]
+> If your upstream source drops raw files without any manifest (e.g. `SALESFORCE`), simply change:
+> ```json
+> "intake_plugin": "manifestless"
+> ```
+> The controller will automatically discover unmanifested data files, group them by timestamp, and calculate cryptographic checksums on the fly!
+
+---
+
+### Step A4: Execution via Existing Intake Feeder
+
+Execute the existing centralized intake runner:
+
+```bash
+cd /sg/local/sid/home/Dsidadm/DATA_LOADER/PROCESSING_TOOLS/BICC_INTAKE_CONTROLLER
+
+# Run with --source override and --enqueue-only for queue testing:
+python3 feeder.py --config config.json --source NETSUITE --enqueue-only
+```
+
+---
+
+### Step A5: Verification of Staged Capsule
+
+Inspect `DATA/LANDING_ZONE/NETSUITE/`:
+```bash
+ls -l DATA/LANDING_ZONE/NETSUITE/
+# Output: BATCH_20261023_100000_101/
+```
+The batch capsule is fully packaged with `batch_descriptor.json`, standardized manifest, and ready for FIFO consumption by Tier 2!
+
+---
+
+## 4. Strategy B Walkthrough: Custom Intake Plugin (Pluggable Architecture, Shared Controller)
+
+In this walkthrough, we onboard **`WORKDAY`**, where upstream drops CSV files accompanied by a proprietary **JSON metadata descriptor**. We create a custom plugin that plugs into the existing controller without needing a separate standalone microservice.
+
+### Scenario Overview:
+- **Source Code**: `WORKDAY`
+- **Drop Format**: CSV files + JSON manifest: `WORKDAY_EXPORT_<TS>_<BATCH_ID>.json`.
+- **JSON Manifest Structure**:
+  ```json
+  {
+    "source": "WORKDAY",
+    "batch_id": "WD_1001",
+    "extract_timestamp": "20261023_103000",
+    "files": [
+      {"filename": "file_worker_1001.csv", "md5": "a1b2c3d4e5f67890123456789abcdef0"},
+      {"filename": "file_payroll_1001.csv", "md5": "0fedcba9876543210987654321abcdef"}
+    ]
+  }
+  ```
+- **Target Tables**: `WORKDAY_WORKER`, `WORKDAY_PAYROLL`.
+- **Development Effort**: ~45 lines of Python.
+
+---
+
+### Step B1: Storage Tier Setup & Partitioning
+
+```bash
+cd /sg/local/sid/home/Dsidadm/DATA_LOADER
+mkdir -p DATA/DROP_ZONE/WORKDAY
+mkdir -p DATA/LANDING_ZONE/WORKDAY
+mkdir -p DATA/LOADING_ZONE/WORKDAY
+mkdir -p DATA/ARCHIVE_ZONE/WORKDAY
+mkdir -p LOGS/WORKDAY
+chmod 775 DATA/*_ZONE/WORKDAY LOGS/WORKDAY
+```
+
+---
+
+### Step B2: Configure Entity Routing (`CONFIG/entity_mapping.csv`)
+
+Add the Workday routing entries to [`CONFIG/entity_mapping.csv`](file:///C:/Users/P992860/data_loader/DATA_LOADER/CONFIG/entity_mapping.csv):
+
+```csv
+SOURCE,TARGET_TABLE,FILE_SIGNATURE,EXTENSION,INNER_EXTENSION,DELIMITER,LOAD_MODE,SKIP_ROWS,HEADER_MODE
+WORKDAY,WORKDAY_WORKER,worker,".csv,.zip",.csv,",",replace,1,every_file
+WORKDAY,WORKDAY_PAYROLL,payroll,".csv,.zip",.csv,",",append,1,every_file
+```
+
+---
+
+### Step B3: Implement the Custom Plugin (`WorkdayIntakePlugin`)
+
+Create `dataloader_core/intake/workday_plugin.py` (or place it in a shared `lib/` directory imported at startup):
+
+```python
+"""
+dataloader_core/intake/workday_plugin.py - Custom Workday JSON Intake Plugin
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+from typing import Any, Dict, List
+
+from dataloader_core.intake.plugin import (
+    PluginRegistry,
+    RawBatchCandidate,
+    SourceIntakePlugin,
+)
+
+logger = logging.getLogger("dataloader_core.intake.workday")
+
+
+class WorkdayIntakePlugin(SourceIntakePlugin):
+    """
+    Discovers and parses Workday JSON manifests: WORKDAY_EXPORT_<TS>_<BATCH_ID>.json
+    """
+
+    source_code = "WORKDAY"
+
+    MANIFEST_PATTERN = re.compile(
+        r"^WORKDAY_EXPORT_(\d{8}_\d{6})_([A-Za-z0-9_-]+)\.json$",
+        re.IGNORECASE,
+    )
+
+    def discover_raw_batches(self, drop_zone: str) -> List[RawBatchCandidate]:
+        if not os.path.exists(drop_zone):
+            return []
+
+        candidates: List[RawBatchCandidate] = []
+        for fname in os.listdir(drop_zone):
+            match = self.MANIFEST_PATTERN.match(fname)
+            if not match:
+                continue
+
+            manifest_path = os.path.join(drop_zone, fname)
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    manifest_data: Dict[str, Any] = json.load(f)
+
+                batch_id = str(manifest_data.get("batch_id") or match.group(2))
+                extract_ts = str(manifest_data.get("extract_timestamp") or match.group(1))
+                file_items = manifest_data.get("files", [])
+
+                # Extract declared filenames
+                declared_files = [item["filename"] for item in file_items if "filename" in item]
+
+                # Construct chronological sort key (timestamp string, batch_id)
+                sort_key = (extract_ts, batch_id)
+
+                candidate = RawBatchCandidate(
+                    batch_id=batch_id,
+                    source=self.source_code,
+                    extract_timestamp_raw=extract_ts,
+                    sort_key=sort_key,
+                    manifest_path=manifest_path,
+                    declared_files=declared_files,
+                    metadata=manifest_data,
+                )
+                candidates.append(candidate)
+            except Exception as exc:
+                logger.error(f"Failed to parse Workday manifest '{fname}': {exc}")
+                continue
+
+        # Sort strictly ascending (FIFO chronological queue)
+        return sorted(candidates, key=lambda c: c.sort_key)
+
+
+# Register plugin in the centralized PluginRegistry
+PluginRegistry.register("WORKDAY", WorkdayIntakePlugin)
+```
+
+---
+
+### Step B4: Configure and Run
+
+In your controller `config.json`, configure:
+```json
+{
+  "feeder": {
+    "source_system_code": "WORKDAY",
+    "intake_plugin": "WORKDAY",
+    "drop_zone": "../../DATA/DROP_ZONE",
+    "logs_dir": "../../LOGS",
+    "file_stability_window_seconds": 3,
+    "entity_mapping_file": "../../CONFIG/entity_mapping.csv"
+  }
+}
+```
+
+Run the existing controller:
+```bash
+python3 feeder.py --config config.json --source WORKDAY --enqueue-only
+```
+The controller dynamically loads `WorkdayIntakePlugin`, discovers the JSON manifests, verifies file stability, reads CSV column headers in memory, and stages batch capsules into `LANDING_ZONE/WORKDAY/`!
+
+---
+
+## 5. Strategy C Walkthrough: Dedicated Standalone Controller (`SAP_ERP`)
+
+In this walkthrough, we build a fully dedicated, autonomous intake controller component for **`SAP_ERP`**, complete with its own directory, custom plugin, dedicated service subclassing `BaseIntakeController`, thin CLI entrypoint, and isolated tests.
+
+### Scenario Overview:
 - **Source Code**: `SAP_ERP`
-- **Drop Format**: Pairs of CSV files and raw manifest files named `SAP_MANIFEST_<TS>_<BATCH_ID>.txt`.
+- **Drop Format**: Semicolon-delimited CSV files + pipe-delimited raw manifest: `SAP_MANIFEST_<TS>_<BATCH_ID>.txt`.
 - **Manifest Format**: Delimited text with pipe separator `|`: `filename|md5_checksum`.
 - **Target Tables**: `SAP_GL_ENTRY` (General Ledger), `SAP_VENDOR` (Vendor Master).
 - **Delimiter**: Semicolon (`;`).
@@ -96,39 +412,28 @@ In this tutorial, we will implement a production-grade intake controller for an 
 
 ---
 
-### Step 1: Storage Tier Setup & Source Partitioning
-
-In `DATA_LOADER`, all storage tiers are partitioned by `<SOURCE>`. Create the partition directories under `DATA/` and `LOGS/`:
+### Step C1: Storage Tier Setup & Source Partitioning
 
 ```bash
 cd /sg/local/sid/home/Dsidadm/DATA_LOADER
 
-# Create partitioned storage zones for SAP_ERP
 mkdir -p DATA/DROP_ZONE/SAP_ERP
 mkdir -p DATA/LANDING_ZONE/SAP_ERP
 mkdir -p DATA/LOADING_ZONE/SAP_ERP
 mkdir -p DATA/ARCHIVE_ZONE/SAP_ERP
 mkdir -p LOGS/SAP_ERP
-```
 
-Verify directory permissions:
-```bash
 chmod 775 DATA/*_ZONE/SAP_ERP LOGS/SAP_ERP
 ```
 
 ---
 
-### Step 2: Configure Entity Routing (`CONFIG/entity_mapping.csv`)
+### Step C2: Configure Entity Routing (`CONFIG/entity_mapping.csv`)
 
-Register the incoming file patterns and Teradata staging targets in [`CONFIG/entity_mapping.csv`](file:///C:/Users/P992860/data_loader/DATA_LOADER/CONFIG/entity_mapping.csv).
+Register the incoming file patterns and Teradata staging targets in [`CONFIG/entity_mapping.csv`](file:///C:/Users/P992860/data_loader/DATA_LOADER/CONFIG/entity_mapping.csv):
 
-`DATA_LOADER` supports the extended **9-column mapping specification**:
 ```csv
 SOURCE,TARGET_TABLE,FILE_SIGNATURE,EXTENSION,INNER_EXTENSION,DELIMITER,LOAD_MODE,SKIP_ROWS,HEADER_MODE
-```
-
-Add the SAP entries to `CONFIG/entity_mapping.csv`:
-```csv
 SAP_ERP,SAP_GL_ENTRY,gl_entry,".csv,.zip,.gz",.csv,";",replace,1,first_chunk_only
 SAP_ERP,SAP_VENDOR,vendor,".csv,.zip,.gz",.csv,";",append,1,every_file
 ```
@@ -137,19 +442,18 @@ SAP_ERP,SAP_VENDOR,vendor,".csv,.zip,.gz",.csv,";",append,1,every_file
 - `SOURCE`: Identifier matching the controller's `source_system_code` (`SAP_ERP`).
 - `TARGET_TABLE`: Teradata staging table name in `${TDENV}SIDFINSTG`.
 - `FILE_SIGNATURE`: Substring matched against the payload filename (e.g. `file_gl_entry_20261021.csv` matches `gl_entry`).
-- `EXTENSION`: Allowed outer extensions.
+- `EXTENSION`: Allowed outer extensions (`.csv`, `.zip`, `.gz`).
 - `INNER_EXTENSION`: Inner file format if payload is wrapped inside `.zip`.
 - `DELIMITER`: Delimiter character passed to TPT via `-s` (`;`).
 - `LOAD_MODE`: `replace` (FastLoad) or `append` (MultiLoad).
 - `SKIP_ROWS`: Number of header lines to skip (`1`).
 - `HEADER_MODE`:
-  - `first_chunk_only`: BICC Solution A — strips line 1 from Chunk 1, loads chunks headless with `SkipRows = 0`.
+  - `first_chunk_only`: Strips line 1 from Chunk 1, loads chunks headless with `SkipRows = 0`.
   - `every_file`: Preserves all headers on disk, instructs TPT to skip headers natively via `-S 1 -Y Y`.
-  - `none`: Files have no header line, loads directly with `SkipRows = 0`.
 
 ---
 
-### Step 3: Implement the Custom Intake Plugin (`SourceIntakePlugin`)
+### Step C3: Implement the Custom Intake Plugin (`lib/sap_plugin.py`)
 
 Create the directory for your custom controller:
 ```bash
@@ -165,112 +469,86 @@ lib/sap_plugin.py - Custom Intake Plugin for SAP ERP Feeds
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from typing import Any, Dict, List
 
-from dataloader_core.intake import (
+from dataloader_core.intake.plugin import (
     PluginRegistry,
     RawBatchCandidate,
     SourceIntakePlugin,
 )
 
+logger = logging.getLogger("sap_intake.plugin")
 
-@PluginRegistry.register("sap_erp")
+
 class SAPIntakePlugin(SourceIntakePlugin):
     """
     Plugin discovering and parsing SAP ERP flat-file exports with pipe-delimited
     manifests: SAP_MANIFEST_<YYYYMMDD_HHMMSS>_<BATCH_ID>.txt
     """
 
+    source_code = "SAP_ERP"
+
     MANIFEST_REGEX = re.compile(
         r"^SAP_MANIFEST_(\d{8}_\d{6})_([A-Za-z0-9_-]+)\.txt$",
         re.IGNORECASE,
     )
 
-    @property
-    def source_system_code(self) -> str:
-        return "SAP_ERP"
-
-    def discover_batches(self, drop_zone_path: str) -> List[RawBatchCandidate]:
+    def discover_raw_batches(self, drop_zone: str) -> List[RawBatchCandidate]:
         """
         Scans DROP_ZONE/SAP_ERP for raw manifests matching MANIFEST_REGEX.
         Returns candidate batches sorted chronologically ascending (FIFO).
         """
-        candidates: List[RawBatchCandidate] = []
-        if not os.path.exists(drop_zone_path):
-            return candidates
+        if not os.path.exists(drop_zone):
+            return []
 
-        for fname in sorted(os.listdir(drop_zone_path)):
-            match = self.MANIFEST_REGEX.match(fname)
+        candidates: List[RawBatchCandidate] = []
+        for filename in os.listdir(drop_zone):
+            match = self.MANIFEST_REGEX.match(filename)
             if not match:
                 continue
 
-            extract_ts = match.group(1)
+            extract_ts_raw = match.group(1)
             batch_id = match.group(2)
-            manifest_file = os.path.join(drop_zone_path, fname)
+            manifest_path = os.path.join(drop_zone, filename)
 
-            # Read pipe-delimited raw manifest to identify declared payload files
-            data_files: List[str] = []
+            # Read declared payload files from pipe-delimited manifest (filename|checksum)
+            declared_files: List[str] = []
             try:
-                with open(manifest_file, "r", encoding="utf-8") as f:
+                with open(manifest_path, "r", encoding="utf-8") as f:
                     for line in f:
                         line = line.strip()
-                        if not line or line.startswith("#"):
-                            continue
-                        parts = line.split("|")
-                        payload_name = parts[0].strip()
-                        if payload_name:
-                            data_files.append(payload_name)
-            except Exception as exc:
-                self.logger.error(f"Error reading SAP manifest '{fname}': {exc}")
+                        if line and not line.startswith("#"):
+                            parts = line.split("|")
+                            declared_files.append(parts[0].strip())
+            except Exception as e:
+                logger.error(f"Failed to read manifest {filename}: {e}")
                 continue
 
-            candidates.append(
-                RawBatchCandidate(
-                    batch_id=batch_id,
-                    extract_ts=extract_ts,
-                    source=self.source_system_code,
-                    raw_manifest_path=manifest_file,
-                    data_files=data_files,
-                )
+            candidate = RawBatchCandidate(
+                batch_id=batch_id,
+                source=self.source_code,
+                extract_timestamp_raw=extract_ts_raw,
+                sort_key=(extract_ts_raw, batch_id),
+                manifest_path=manifest_path,
+                declared_files=declared_files,
+                metadata={"raw_manifest": filename, "source": self.source_code},
             )
+            candidates.append(candidate)
 
-        # Sort strictly ascending by extract timestamp (FIFO)
-        candidates.sort(key=lambda c: (c.extract_ts, c.batch_id))
-        return candidates
+        # Enforce FIFO chronological queue order
+        return sorted(candidates, key=lambda c: c.sort_key)
 
-    def extract_batch_metadata(
-        self, candidate: RawBatchCandidate, drop_zone_path: str
-    ) -> Dict[str, Any]:
-        """Returns source-specific audit metadata to record in the audit receipt."""
-        return {
-            "source": self.source_system_code,
-            "plugin": "SAPIntakePlugin",
-            "batch_id": candidate.batch_id,
-            "extract_ts": candidate.extract_ts,
-            "raw_manifest": os.path.basename(candidate.raw_manifest_path or ""),
-            "declared_file_count": len(candidate.data_files),
-        }
 
-    def validate_batch_files(
-        self, candidate: RawBatchCandidate, drop_zone_path: str
-    ) -> bool:
-        """Verifies that all declared payload files exist and are non-empty."""
-        for fname in candidate.data_files:
-            fpath = os.path.join(drop_zone_path, fname)
-            if not os.path.isfile(fpath):
-                self.logger.error(f"Declared file '{fname}' missing from '{drop_zone_path}'!")
-                return False
-            if os.path.getsize(fpath) == 0:
-                self.logger.error(f"Declared file '{fname}' is 0 bytes (truncated arrival)!")
-                return False
-        return True
+# Register in the plugin registry
+PluginRegistry.register("SAP_ERP", SAPIntakePlugin)
 ```
 
 ---
 
-### Step 4: Implement the Intake Controller Service
+### Step C4: Implement the Dedicated Controller Service (`lib/intake_service.py`)
 
 Create `PROCESSING_TOOLS/SAP_INTAKE_CONTROLLER/lib/intake_service.py`:
 
@@ -281,23 +559,30 @@ lib/intake_service.py - SAP ERP Intake Controller Service
 
 from __future__ import annotations
 
+import logging
 import os
-import subprocess
 import sys
 from typing import Optional
 
-from dataloader_core.exceptions import OrchestratorExecutionError
 from dataloader_core.intake import BaseIntakeController
+from dataloader_core.logging_utils import LoggingFactory
 
-# Ensure custom plugin is registered
-from lib.sap_plugin import SAPIntakePlugin  # noqa: F401
+from .sap_plugin import SAPIntakePlugin
+
+logger = logging.getLogger("sap_intake.service")
 
 
 class SAPIntakeControllerService(BaseIntakeController):
     """
-    Intake Producer service for SAP ERP, inheriting all core lifecycle capabilities
-    from BaseIntakeController (locking, stability verification, in-memory header inspection,
-    MD5 calculation, atomic capsule packaging, and Orchestrator delegation).
+    Specialized intake controller service for SAP ERP feeds.
+    Inherits enterprise lifecycle mechanics from BaseIntakeController:
+      1. Advisory lock sentry (.feeder_SAP_ERP.pid) with active polling.
+      2. Multi-batch FIFO discovery via SAPIntakePlugin.
+      3. File stability sentry (>0 bytes and settled size).
+      4. In-memory CSV header extraction and schema validation.
+      5. MD5 computation and batch_descriptor.json synthesis.
+      6. Atomic Batch Capsule staging in LANDING_ZONE/SAP_ERP/.
+      7. Orchestrator bridge invocation with strict FAIL_STOP.
     """
 
     def __init__(
@@ -307,85 +592,28 @@ class SAPIntakeControllerService(BaseIntakeController):
         skip_post_tasks: bool = False,
         enqueue_only: bool = False,
     ) -> None:
+        # Initialize custom SAP plugin instance
+        sap_plugin = SAPIntakePlugin()
+
         super().__init__(
             config_path=config_path,
             source_override=source_override or "SAP_ERP",
             skip_post_tasks=skip_post_tasks,
             enqueue_only=enqueue_only,
+            plugin=sap_plugin,
         )
-
-    def invoke_orchestration_stage(self) -> int:
-        """
-        Launches DATA_INGESTION_ORCHESTRATOR subprocess under FAIL_STOP semantics,
-        streaming execution logs in real time and forwarding environment flags.
-        """
-        orch_script = os.path.join(self.orch_dir, "orchestrator.py")
-        if not os.path.exists(orch_script):
-            raise OrchestratorExecutionError(f"orchestrator.py not found at: '{orch_script}'")
-
-        cmd = [
-            self.python_bin,
-            orch_script,
-            "--config", self.orch_config,
-            "--source", self.default_source,
-        ]
-        if self.skip_post_tasks:
-            cmd.append("--skip-post-tasks")
-
-        post_tasks_file = self._write_post_tasks_file()
-        if post_tasks_file:
-            cmd.extend(["--post-tasks-file", post_tasks_file])
-
-        extra_env = os.environ.copy()
-        if "auto_migrate_ddl" in self.schema_cfg:
-            extra_env["DL_AUTO_MIGRATE_DDL"] = "true" if self.schema_cfg.get("auto_migrate_ddl") else "false"
-
-        self.logger.info(f"Invoking Orchestrator: {' '.join(cmd)} (cwd: '{self.orch_dir}')")
-        proc = subprocess.Popen(
-            cmd,
-            cwd=self.orch_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            universal_newlines=True,
-            env=extra_env,
-        )
-
-        try:
-            for line in iter(proc.stdout.readline, ""):
-                if line:
-                    self.logger.info(f"[ORCHESTRATOR] {line.rstrip()}")
-        finally:
-            if proc.stdout:
-                proc.stdout.close()
-
-        rc = proc.wait()
-        if rc != 0:
-            raise OrchestratorExecutionError(
-                f"Orchestrator failed with exit code {rc} under FAIL_STOP."
-            )
-
-        self.logger.info("Orchestrator completed successfully with exit code 0.")
-        return 0
 ```
 
 ---
 
-### Step 5: Create the Thin CLI Entrypoint (`feeder.py`)
+### Step C5: Create the Thin CLI Entrypoint (`feeder.py`)
 
-Create `PROCESSING_TOOLS/SAP_INTAKE_CONTROLLER/feeder.py`.
-
-> [!IMPORTANT]
-> Keep `feeder.py` strictly below **80 lines of code**! All business logic is encapsulated in `SAPIntakeControllerService`.
+Create `PROCESSING_TOOLS/SAP_INTAKE_CONTROLLER/feeder.py` (strictly under 80 lines):
 
 ```python
 """
-feeder.py - SAP ERP Intake Controller CLI Entrypoint (Pure Producer)
-
-Thin CLI delegating DROP_ZONE scanning, settling sentry verification, in-memory
-header inspection, MD5 hashing, atomic Batch Capsule packaging in LANDING_ZONE,
-and Orchestrator delegation to `lib.intake_service.SAPIntakeControllerService`.
+feeder.py - SAP ERP Intake Controller CLI Entrypoint
+Stateless Producer staging Batch Capsules in LANDING_ZONE/SAP_ERP.
 """
 
 from __future__ import annotations
@@ -406,20 +634,22 @@ from lib.intake_service import SAPIntakeControllerService
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="SAP ERP Intake Controller - Pure Batch Capsule Producer")
-    parser.add_argument("--config", type=str, required=True, help="Path to configuration JSON")
+    parser = argparse.ArgumentParser(
+        description="SAP ERP Intake Controller - Stateless Batch Capsule Producer"
+    )
+    parser.add_argument("--config", type=str, required=True, help="Path to config JSON")
     parser.add_argument(
         "--skip-post-tasks",
         action="store_true",
         default=False,
-        help="Skip execution of downstream post-ingestion tasks (e.g. dbt)",
+        help="Skip downstream post-ingestion tasks",
     )
-    parser.add_argument("--source", type=str, default="SAP_ERP", help="Source system code override")
+    parser.add_argument("--source", type=str, default="SAP_ERP", help="Source system code")
     parser.add_argument(
         "--enqueue-only",
         action="store_true",
         default=False,
-        help="Stage and publish Batch Capsules without invoking the Orchestrator",
+        help="Stage batch capsules in LANDING_ZONE without invoking Orchestrator",
     )
     args = parser.parse_args()
 
@@ -442,36 +672,27 @@ if __name__ == "__main__":
 
 ---
 
-### Step 6: Configuration File (`config.json` & `config_template.json`)
+### Step C6: Configuration File (`config.json`)
 
 Create `PROCESSING_TOOLS/SAP_INTAKE_CONTROLLER/config.json`:
 
 ```json
 {
   "feeder": {
-    "drop_zone": "../../DATA/DROP_ZONE",
-    "raw_manifest_archive": "../../DATA/ARCHIVE_ZONE",
-    "logs_dir": "../../LOGS",
-    "file_stability_window_seconds": 3,
     "source_system_code": "SAP_ERP",
-    "intake_plugin": "sap_erp",
+    "drop_zone": "../../DATA/DROP_ZONE",
+    "logs_dir": "../../LOGS",
+    "file_stability_window_seconds": 5,
     "entity_mapping_file": "../../CONFIG/entity_mapping.csv",
     "concurrency": {
       "poll_interval_seconds": 5,
       "lock_timeout_seconds": 7200
-    },
-    "post_ingestion_tasks": [
-      {
-        "type": "shell",
-        "command": "echo 'SAP ERP post-task completed for batch $CURRENT_BATCH_ID'"
-      }
-    ]
+    }
   },
   "schema_guard": {
     "auto_migrate_ddl": true,
-    "default_column_type": "VARCHAR(4000)",
-    "character_set": "UNICODE",
-    "target_database": "${TDENV}SIDFINSTG"
+    "target_database": "${TDENV}SIDFINSTG",
+    "technical_database": "${TDENV}SIDFINTCH"
   },
   "orchestrator": {
     "orchestrator_dir": "../DATA_INGESTION_ORCHESTRATOR",
@@ -485,17 +706,20 @@ Create `PROCESSING_TOOLS/SAP_INTAKE_CONTROLLER/config.json`:
 
 ---
 
-## 4. Testing & Verifying Your New Intake Controller
+## 6. Testing & Verifying Any Intake Strategy
 
 Follow this 3-tier testing approach before promoting your controller to production:
 
-### 4.1 Unit Testing the Custom Plugin
+### 6.1 Unit Testing Custom Plugins
 
-Create a test script `test_sap_plugin.py`:
+Create `TESTS/unit/test_sap_plugin.py`:
 
 ```python
-import tempfile, os, unittest
+import os
+import tempfile
+import unittest
 from lib.sap_plugin import SAPIntakePlugin
+
 
 class TestSAPPlugin(unittest.TestCase):
     def test_discovery_and_fifo_order(self):
@@ -503,22 +727,25 @@ class TestSAPPlugin(unittest.TestCase):
             # Create 2 batch manifests with timestamps
             m1 = os.path.join(tmp, "SAP_MANIFEST_20261021_080000_1001.txt")
             m2 = os.path.join(tmp, "SAP_MANIFEST_20261021_090000_1002.txt")
-            with open(m1, "w") as f: f.write("gl_entry_1001.csv|md5hash1\n")
-            with open(m2, "w") as f: f.write("gl_entry_1002.csv|md5hash2\n")
+            with open(m1, "w") as f:
+                f.write("gl_entry_1001.csv|dummy_md5_1\n")
+            with open(m2, "w") as f:
+                f.write("gl_entry_1002.csv|dummy_md5_2\n")
 
             plugin = SAPIntakePlugin()
-            batches = plugin.discover_batches(tmp)
+            batches = plugin.discover_raw_batches(tmp)
 
             self.assertEqual(len(batches), 2)
-            # Assert FIFO order
+            # Assert FIFO chronological order
             self.assertEqual(batches[0].batch_id, "1001")
             self.assertEqual(batches[1].batch_id, "1002")
+
 
 if __name__ == "__main__":
     unittest.main()
 ```
 
-### 4.2 Decoupled Queue Verification (`--enqueue-only`)
+### 6.2 Decoupled Queue Verification (`--enqueue-only`)
 
 Test staging without touching Teradata or running the Orchestrator:
 
@@ -540,22 +767,26 @@ python3 feeder.py --config config.json --enqueue-only
 
 #### Assertions to Verify:
 1. Exit code is `0`.
-2. `DATA/DROP_ZONE/SAP_ERP/` is empty.
+2. `DATA/DROP_ZONE/SAP_ERP/` is empty (raw arrival processed).
 3. `DATA/LANDING_ZONE/SAP_ERP/BATCH_20261021_120000_1001/` was created.
 4. Capsule contains:
    - `file_gl_entry_1001.csv`
    - `MANIFEST_SAP_ERP_20261021_120000_1001.MF`
-   - `batch_descriptor.json` containing:
+   - `batch_descriptor.json` containing pre-computed metadata:
      ```json
-     "header_columns": ["GL_ACCOUNT", "AMOUNT", "CURRENCY", "POSTING_DATE"],
-     "delimiter": ";",
-     "load_mode": "replace"
+     {
+       "batch_id": "1001",
+       "source": "SAP_ERP",
+       "delimiter": ";",
+       "load_mode": "replace",
+       "header_columns": ["GL_ACCOUNT", "AMOUNT", "CURRENCY", "POSTING_DATE"]
+     }
      ```
    - `RAW/RECEIPT_SAP_ERP_20261021_120000_1001.json`
 
 ---
 
-### 4.3 End-to-End Ingestion via Orchestrator
+### 6.3 End-to-End Ingestion via Orchestrator
 
 Trigger the Orchestrator to consume the queued SAP capsule:
 
@@ -572,47 +803,53 @@ python3 orchestrator.py --config config.json --all-sources
 #### Verification:
 1. `DATA/LANDING_ZONE/SAP_ERP/` and `DATA/LOADING_ZONE/SAP_ERP/` are empty.
 2. The batch capsule is archived in `DATA/ARCHIVE_ZONE/SAP_ERP/2026-10/BATCH_1001_20261021_120000/`.
-3. Teradata `${TDENV}SIDFINTCH.BATCH_RUNS` has `STATUS = 'SUCCESS'` and `PROCESS_PID` retained.
+3. Teradata `${TDENV}SIDFINTCH.BATCH_RUNS` has `STATUS = 'SUCCESS'` and `PROCESS_PID` permanently retained.
 4. Teradata staging table `${TDENV}SIDFINSTG.SAP_GL_ENTRY` contains 1 row with audit columns:
    - `INFA_BATCH_ID = '1001'`
    - `INFA_LAST_REPLICATED` populated.
 
 ---
 
-## 5. Production Operations & Scheduling
+## 7. Production Operations & Scheduling Models
 
-### 5.1 Automated Scheduling Options
+Depending on your integration architecture and source volume, choose between two operational models:
 
-Depending on your integration architecture, choose between two operational models:
-
-#### Model 1: Synchronous Producer-Trigger (Simple)
+### 7.1 Model 1: Synchronous Producer-Trigger (Simple)
 The intake controller runs on a 15-minute cron schedule, stages all pending batches, and triggers the Orchestrator once:
+
 ```bash
+# Crontab: Ingest SAP every 15 minutes and trigger Orchestrator
 */15 * * * * cd /sg/local/sid/home/Dsidadm/DATA_LOADER/PROCESSING_TOOLS/SAP_INTAKE_CONTROLLER && python3 feeder.py --config config.json >> /sg/local/sid/home/Dsidadm/DATA_LOADER/LOGS/SAP_ERP/scheduler.log 2>&1
 ```
 
-#### Model 2: Decoupled Producer / Consumer (Recommended for Multi-Source Scaling)
-- **Intake Cron (Producer)**: Runs every 5 minutes with `--enqueue-only`. Publishes capsules into `LANDING_ZONE/SAP_ERP/` without Teradata load:
+### 7.2 Model 2: Decoupled Multi-Source Producer / Consumer Queue (Recommended for Enterprise Scale)
+- **Intake Cron (Producer)**: Runs frequently (every 3 to 5 minutes) with `--enqueue-only`. Publishes capsules into `LANDING_ZONE/<SOURCE>/` with zero Teradata database load:
   ```bash
+  # Ingest and queue NetSuite batches
+  */5 * * * * cd /sg/local/sid/home/Dsidadm/DATA_LOADER/PROCESSING_TOOLS/BICC_INTAKE_CONTROLLER && python3 feeder.py --config config.json --source NETSUITE --enqueue-only
+  # Ingest and queue Workday batches
+  */5 * * * * cd /sg/local/sid/home/Dsidadm/DATA_LOADER/PROCESSING_TOOLS/BICC_INTAKE_CONTROLLER && python3 feeder.py --config config.json --source WORKDAY --enqueue-only
+  # Ingest and queue SAP ERP batches
   */5 * * * * cd /sg/local/sid/home/Dsidadm/DATA_LOADER/PROCESSING_TOOLS/SAP_INTAKE_CONTROLLER && python3 feeder.py --config config.json --enqueue-only
   ```
-- **Global Orchestrator Cron (Consumer)**: Runs every 10 minutes to drain all source queues under global slot governance:
+- **Global Orchestrator Cron (Consumer)**: Runs every 10 minutes to drain all queued source capsules in strict FIFO order under global slot governance (`UtilitySlotGovernor`):
   ```bash
-  */10 * * * * cd /sg/local/sid/home/Dsidadm/DATA_LOADER/PROCESSING_TOOLS/DATA_INGESTION_ORCHESTRATOR && python3 orchestrator.py --config config.json --all-sources
+  */10 * * * * cd /sg/local/sid/home/Dsidadm/DATA_LOADER/PROCESSING_TOOLS/DATA_INGESTION_ORCHESTRATOR && python3 orchestrator.py --config config.json --all-sources >> /sg/local/sid/home/Dsidadm/DATA_LOADER/LOGS/global_orchestrator.log 2>&1
   ```
 
 ---
 
-## 6. Developer Checklist & Quality Gates
+## 8. Developer Checklist & Quality Gates
 
-Before submitting your new intake controller for code review, verify:
+Before submitting your new intake controller for code review or promoting to production, verify:
 
-- [ ] **Decoupled Architecture**: No database queries, no Teradata imports in `SAP_INTAKE_CONTROLLER`.
-- [ ] **FIFO Ordering**: `discover_batches()` sorts candidates strictly ascending by timestamp.
-- [ ] **Stability Sentry**: `file_stability_window_seconds >= 3` in `config.json`.
-- [ ] **Entity Routing**: All targets configured in `CONFIG/entity_mapping.csv` with delimiter, load mode, and header mode.
-- [ ] **Line Limits**: `feeder.py` strictly $< 80$ lines.
-- [ ] **POSIX Compliance**: Line endings are strict Unix LF (`CRLF = 0`, `BOM = 0`).
-- [ ] **Locking**: Process lock `.feeder_SAP_ERP.pid` properly handles active polling and dead PID cleanup.
-- [ ] **FAIL_STOP**: Subprocess non-zero exit code halts queue processing immediately.
-- [ ] **Test Validation**: Tested with unit tests and live ingestion into Teradata Vantage.
+- [ ] **Strategy Alignment**: Selected the most appropriate strategy (A, B, or C) avoiding unnecessary custom code.
+- [ ] **Zero Database Dependency**: No database queries, no SQL imports, and zero Teradata connectivity in Tier 1.
+- [ ] **FIFO Chronological Ordering**: `discover_raw_batches()` sorts candidates strictly ascending by timestamp sort key.
+- [ ] **File Stability Sentry**: `file_stability_window_seconds >= 3` in `config.json` to prevent partial file ingestion.
+- [ ] **Entity Routing**: All source entities registered in `CONFIG/entity_mapping.csv` with delimiter, load mode, and header mode.
+- [ ] **Line Count Limit**: Any CLI entrypoint (`feeder.py`) is strictly $< 80$ lines of code.
+- [ ] **POSIX Compliance**: Strict Unix line endings (`CRLF = 0`, `BOM = 0`).
+- [ ] **Locking & Concurrency**: Process lock (`.feeder_<SOURCE>.pid`) properly handles active polling and stale PID cleanup.
+- [ ] **FAIL_STOP Integrity**: Subprocess non-zero exit code halts queue execution immediately.
+- [ ] **Automated Testing**: Verified with unit tests, `--enqueue-only` queue staging, and live Teradata load.
