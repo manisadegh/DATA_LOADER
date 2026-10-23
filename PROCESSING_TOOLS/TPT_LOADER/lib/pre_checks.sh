@@ -5,6 +5,7 @@
 [ -z "${TARGET_TABLE}" ]         && { usage; die 1 "-t <table> is mandatory"; }
 [ -z "${TDPID}" ]                && die 1 "TDPID is not set"
 [ -z "${TDENV+x}" ]              && log WARN "TDENV is not set - using no environment prefix"
+TPT_TEMPLATE="${TPT_TEMPLATE:-${LIB_DIR:-${SCRIPT_DIR}/lib}/load_csv_generic.tpt.template}"
 [ -f "${TPT_TEMPLATE}" ]         || die 1 "TPT template not found: ${TPT_TEMPLATE}"
 
 validate_identifier "${TARGET_DB}" "TARGET_DB"

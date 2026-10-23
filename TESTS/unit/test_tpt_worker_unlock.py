@@ -63,6 +63,7 @@ class TestTptWorkerUnlock(unittest.TestCase):
             retry_count=0,
             batch_id="9001",
             tpt_config=tpt_cfg,
+            orch_config={"loading_zone": self.work_dir},
             db_state=mock_db,
             source="ORACLE_FUSION",
         )
@@ -96,6 +97,7 @@ class TestTptWorkerUnlock(unittest.TestCase):
             retry_count=0,
             batch_id="9002",
             tpt_config=tpt_cfg,
+            orch_config={"loading_zone": self.work_dir},
             db_state=mock_db,
             source="ORACLE_FUSION",
         )
@@ -124,6 +126,7 @@ class TestTptWorkerUnlock(unittest.TestCase):
             retry_count=0,
             batch_id="9003",
             tpt_config=tpt_cfg,
+            orch_config={"loading_zone": self.work_dir},
             db_state=mock_db,
             source="ORACLE_FUSION",
         )

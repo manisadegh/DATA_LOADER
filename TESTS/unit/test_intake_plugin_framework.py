@@ -88,13 +88,13 @@ class TestIntakePluginFramework(unittest.TestCase):
                 )
 
             # Create data payload and .ctl control file
-            payload_file = os.path.join(drop_dir, "sap_gl_entry_20261021.csv")
+            payload_file = os.path.join(drop_dir, "sap_gl_entry-batch7001-.csv")
             with open(payload_file, "w", encoding="utf-8") as f:
                 f.write("ENTRY_ID;ACCOUNT_CODE;AMOUNT\n101;AC4000;1250.50\n")
 
             ctl_file = os.path.join(drop_dir, "SAP_GL_7001.ctl")
             with open(ctl_file, "w", encoding="utf-8") as f:
-                f.write("sap_gl_entry_20261021.csv\n")
+                f.write("sap_gl_entry-batch7001-.csv\n")
 
             cfg_file = os.path.join(tmpdir, "config.json")
             with open(cfg_file, "w", encoding="utf-8") as f:

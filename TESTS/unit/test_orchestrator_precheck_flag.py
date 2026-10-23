@@ -86,14 +86,16 @@ class TestOrchestratorPrecheckFlag(unittest.TestCase):
         mock_db.get_pending_tasks.return_value = [("ERP_MSH_USER", "file_userpvo-batch1-.csv", 0)]
         service._db = mock_db
 
+        capsule_dir = os.path.join(self.landing, "BATCH_20261016_100000_101")
         ctx = BatchContext(
             batch_id="101",
             source="ORACLE_FUSION",
             extract_ts="20261016_100000",
-            manifest_file="MANIFEST_ORACLE_FUSION_20261016_100000_101.MF",
-            manifest_entries={},
-            capsule_dir=os.path.join(self.landing, "BATCH_20261016_100000_101"),
-            validated_files=["file_userpvo-batch1-.csv"],
+            clean_ts="20261016_100000",
+            manifest_path=os.path.join(capsule_dir, "MANIFEST_ORACLE_FUSION_20261016_100000_101.MF"),
+            manifest_basename="MANIFEST_ORACLE_FUSION_20261016_100000_101.MF",
+            active_zone=capsule_dir,
+            is_in_flight=False,
             entities_workload={
                 "ERP_MSH_USER": {
                     "files": ["file_userpvo-batch1-.csv"],
@@ -101,6 +103,9 @@ class TestOrchestratorPrecheckFlag(unittest.TestCase):
                     "target_table": "ERP_MSH_USER",
                 }
             },
+            validated_files=["file_userpvo-batch1-.csv"],
+            batch_log_dir=self.tmpdir.name,
+            run_log_file=os.path.join(self.tmpdir.name, "run.log"),
         )
 
         ok = service.execute_entity_tasks(ctx)
@@ -127,14 +132,16 @@ class TestOrchestratorPrecheckFlag(unittest.TestCase):
         mock_db.get_pending_tasks.return_value = [("ERP_MSH_USER", "file_userpvo-batch1-.csv", 0)]
         service._db = mock_db
 
+        capsule_dir = os.path.join(self.landing, "BATCH_20261016_100000_102")
         ctx = BatchContext(
             batch_id="102",
             source="ORACLE_FUSION",
             extract_ts="20261016_100000",
-            manifest_file="MANIFEST_ORACLE_FUSION_20261016_100000_102.MF",
-            manifest_entries={},
-            capsule_dir=os.path.join(self.landing, "BATCH_20261016_100000_102"),
-            validated_files=["file_userpvo-batch1-.csv"],
+            clean_ts="20261016_100000",
+            manifest_path=os.path.join(capsule_dir, "MANIFEST_ORACLE_FUSION_20261016_100000_102.MF"),
+            manifest_basename="MANIFEST_ORACLE_FUSION_20261016_100000_102.MF",
+            active_zone=capsule_dir,
+            is_in_flight=False,
             entities_workload={
                 "ERP_MSH_USER": {
                     "files": ["file_userpvo-batch1-.csv"],
@@ -142,6 +149,9 @@ class TestOrchestratorPrecheckFlag(unittest.TestCase):
                     "target_table": "ERP_MSH_USER",
                 }
             },
+            validated_files=["file_userpvo-batch1-.csv"],
+            batch_log_dir=self.tmpdir.name,
+            run_log_file=os.path.join(self.tmpdir.name, "run.log"),
         )
 
         ok = service.execute_entity_tasks(ctx)

@@ -59,14 +59,14 @@ class TestPerEntityMappingOptions(unittest.TestCase):
             rules = mapper.load_rules()
             self.assertEqual(len(rules), 3)
 
-            crm_rule = mapper.match_file("file_events_part1.csv", source="CRM")
+            crm_rule = mapper.match_file("file_events-batch1001-part1.csv", source="CRM")
             self.assertIsNotNone(crm_rule)
             self.assertEqual(crm_rule.delimiter, ";")
             self.assertEqual(crm_rule.load_mode, "append")
             self.assertEqual(crm_rule.skip_rows, 2)
             self.assertEqual(crm_rule.header_mode, "every_file")
 
-            sap_rule = mapper.match_file("feed_part1.csv", source="SAP")
+            sap_rule = mapper.match_file("feed-batch2001-part1.csv", source="SAP")
             self.assertIsNotNone(sap_rule)
             self.assertEqual(sap_rule.delimiter, "|")
             self.assertEqual(sap_rule.load_mode, "append")

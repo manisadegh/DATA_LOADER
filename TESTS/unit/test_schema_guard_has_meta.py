@@ -66,9 +66,9 @@ class TestSchemaGuardHasMeta(unittest.TestCase):
 
         with self.assertRaises(SchemaSyncError) as cm:
             sync_entity_schema_if_drifted(
-                conn=mock_conn,
-                td_db="TEST_DB",
-                td_table="TEST_TABLE",
+                connection=mock_conn,
+                target_db="TEST_DB",
+                target_table="TEST_TABLE",
                 csv_cols=["COL_A", "COL_B"],
             )
         self.assertIn("exactly one audit column", str(cm.exception))

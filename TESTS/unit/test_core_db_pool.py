@@ -85,7 +85,7 @@ class TestCoreDBPool(unittest.TestCase):
             base_env=base,
         )
         self.assertEqual(env["TDPID"], "tdadev")
-        self.assertEqual(env["USER"], "DEV0SIDFINADM")
+        self.assertEqual(env["TD_LOGON_USER"], "DEV0SIDFINADM")
         self.assertNotIn("TD_PASSWORD", env)
 
     def test_multithreaded_connection_pool_reuse(self):

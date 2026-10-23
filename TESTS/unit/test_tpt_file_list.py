@@ -50,6 +50,7 @@ class TestTptFileList(unittest.TestCase):
         env = os.environ.copy()
         env["SCRIPT_DIR"] = TPT_DIR.replace("\\", "/")
         env["LIB_DIR"] = LIB_DIR.replace("\\", "/")
+        env["TPT_TEMPLATE"] = os.path.join(LIB_DIR, "load_csv_generic.tpt.template").replace("\\", "/")
         env["TPT_WORK_DIR"] = self.work_dir.replace("\\", "/")
         env["TDPID"] = "tdadev"
         env["TDENV"] = "DEV0"
@@ -82,7 +83,8 @@ class TestTptFileList(unittest.TestCase):
         body = f"source '{parse_args}' -f '{self.data1}' -L '{list_file}' -t TEST && source '{pre_checks}'"
         proc = self._run_sh(body)
         self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("-f and -L are mutually exclusive", proc.stderr)
+        out = f"{proc.stdout}\n{proc.stderr}"
+        self.assertIn("-f and -L are mutually exclusive", out)
 
     def test_relative_path_rejected(self):
         list_file = os.path.join(self.tmpdir.name, "rel_list.txt")
@@ -95,7 +97,8 @@ class TestTptFileList(unittest.TestCase):
         body = f"source '{parse_args}' -L '{list_file}' -t TEST && source '{pre_checks}'"
         proc = self._run_sh(body)
         self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("File list entries must be absolute paths", proc.stderr)
+        out = f"{proc.stdout}\n{proc.stderr}"
+        self.assertIn("File list entries must be absolute paths", out)
 
     def test_jobvars_filelist_mode(self):
         list_file = os.path.join(self.tmpdir.name, "abs_list.txt").replace("\\", "/")
@@ -117,7 +120,7 @@ class TestTptFileList(unittest.TestCase):
             f"source '{gen_jobvars}'"
         )
         proc = self._run_sh(body)
-        self.assertEqual(proc.returncode, 0, f"Failed: {proc.stderr}")
+        self.assertEqual(proc.returncode, 0, f"Failed: stdout={proc.stdout}\nstderr={proc.stderr}")
 
         jobvars_path = os.path.join(job_dir, "jobvars.txt")
         self.assertTrue(os.path.exists(jobvars_path))
@@ -143,7 +146,8 @@ class TestTptFileList(unittest.TestCase):
         )
         proc = self._run_sh(body)
         self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("has audit columns: -B <batch_id> (or -b pattern) is mandatory", proc.stderr)
+        out = f"{proc.stdout}\n{proc.stderr}"
+        self.assertIn("has audit columns: -B <batch_id> (or -b pattern) is mandatory", out)
 
 
 if __name__ == "__main__":

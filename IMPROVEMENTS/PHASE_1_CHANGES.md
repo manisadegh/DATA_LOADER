@@ -174,6 +174,18 @@
 
 ---
 
+### Phase 1 Remediation & Unit Test Suite Stabilization
+Following the initial run of the test suite on Unix DEV:
+1. **`test_core_db_pool.py`**: Updated assertion in `test_build_tpt_environment` to verify `env["TD_LOGON_USER"] == "DEV0SIDFINADM"` (F1.12).
+2. **`test_orchestrator_precheck_flag.py`**: Updated `BatchContext` test instantiation to match canonical dataclass signature (`clean_ts`, `manifest_path`, `manifest_basename`, `active_zone`, `is_in_flight`, `batch_log_dir`, `run_log_file`).
+3. **`test_schema_guard_has_meta.py` & `schema_guard.py`**: Adopted canonical parameters (`connection`, `target_db`, `target_table`) and added defensive kwargs resolution for `td_db` and `td_table`.
+4. **`test_tpt_worker_unlock.py` & `tpt_worker.py`**: Handled `loading_zone is None` gracefully in `run_tpt_loader` when relative paths or mocks are used without an explicit loading zone.
+5. **`test_intake_plugin_framework.py` & `test_per_entity_mapping_options.py`**: Aligned test payload filenames (`sap_gl_entry-batch7001-.csv`, `file_events-batch1001-part1.csv`, `feed-batch2001-part1.csv`) with F1.8 anchored token requirements `(?:^|_)<sig>(?=-batch|\.)`.
+6. **`test_orchestrator_service.py`**: Patched `sync_entity_schema_if_drifted` in service lifecycle test so missing table checks don't fail when Teradata cursor is mocked.
+7. **`TPT_LOADER/lib/env_and_helpers.sh` & `pre_checks.sh`**: Directed `die` error output to `>&2` (stderr) and defaulted `TPT_TEMPLATE="${TPT_TEMPLATE:-${LIB_DIR:-${SCRIPT_DIR}/lib}/load_csv_generic.tpt.template}"`. Updated `test_tpt_file_list.py` and `test_tpt_job_generation.py` subprocess assertions.
+
+---
+
 ## 3. Inventory of New Unit Test Modules
 
 The following unit tests have been created in `DATA_LOADER/TESTS/unit/` and are automatically discovered by `python3 -m unittest discover -s TESTS/unit -p "test_*.py"`:

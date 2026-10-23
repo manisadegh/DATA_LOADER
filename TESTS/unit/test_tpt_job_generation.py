@@ -102,7 +102,8 @@ class TestTptJobGeneration(unittest.TestCase):
         cols_data = "COL_BAD|BV|16|0|0|0\n"
         proc = self._run_generator(cols_data)
         self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("Unsupported column type 'BV'", proc.stderr)
+        out = f"{proc.stdout}\n{proc.stderr}"
+        self.assertIn("Unsupported column type 'BV'", out)
 
     def test_insert_with_audit_columns(self):
         cols_data = "C1|CV|20|1|0|0\nC2|I|4|0|0|0\n"
@@ -130,7 +131,8 @@ class TestTptJobGeneration(unittest.TestCase):
         cols_data = "C1|CV|20|1|0|0\n"
         proc = self._run_generator(cols_data, has_meta="2", batch_id="90'01;--")
         self.assertNotEqual(proc.returncode, 0)
-        self.assertIn("characters not allowed in INFA_BATCH_ID", proc.stderr)
+        out = f"{proc.stdout}\n{proc.stderr}"
+        self.assertIn("characters not allowed in INFA_BATCH_ID", out)
 
 
 if __name__ == "__main__":

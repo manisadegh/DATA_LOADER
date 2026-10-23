@@ -234,8 +234,8 @@ def sync_entity_schema_if_drifted(
       (is_identical: bool, action: str, columns: List[str], has_meta: int)
     """
     conn = connection or kwargs.get("conn")
-    td_db = target_db or kwargs.get("target_database")
-    td_table = target_table or kwargs.get("entity") or kwargs.get("table")
+    td_db = target_db or kwargs.get("td_db") or kwargs.get("target_database")
+    td_table = target_table or kwargs.get("td_table") or kwargs.get("entity") or kwargs.get("table")
     def_type = kwargs.get("default_col_type", default_type)
     auto_migrate = kwargs.get("auto_migrate_ddl", auto_migrate_ddl)
     cols_in = csv_cols or kwargs.get("csv_cols")

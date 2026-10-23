@@ -99,7 +99,8 @@ class TestOrchestratorService(unittest.TestCase):
             mock_db.get_batch_summary.return_value = True
             svc.db = mock_db
 
-            with patch("lib.orchestrator_service.run_tpt_loader", return_value=("ERP_MSH_USER", True)):
+            with patch("lib.orchestrator_service.sync_entity_schema_if_drifted", return_value=(True, "IDENTICAL", ["USER_ID", "USER_NAME"], 2)), \
+                 patch("lib.orchestrator_service.run_tpt_loader", return_value=("ERP_MSH_USER", True)):
                 rc = svc.run()
 
             logging.shutdown()
