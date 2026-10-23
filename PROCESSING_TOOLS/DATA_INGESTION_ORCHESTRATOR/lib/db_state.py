@@ -51,10 +51,13 @@ class TeradataStateDB:
         conn_mgr: Optional[TeradataConnectionManager] = None,
         tech_db: Optional[str] = None,
         technical_database: Optional[str] = None,
+        default_source: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
         if td_config is None:
             td_config = {}
+
+        self.default_source = default_source or kwargs.get("source")
 
         if not isinstance(td_config, dict):
             self.conn_mgr = td_config
@@ -75,12 +78,18 @@ class TeradataStateDB:
         self.tech_db = validate_sql_identifier(raw_tech_db)
         self.current_attempt: Dict[Tuple[str, str], int] = {}
 
+    def _resolve_source(self, source: Optional[str]) -> str:
+        src = source or self.default_source
+        return _require_source(src)
+
     def get_connection(self):
         """
         Borrows a pooled TeradataConnection context manager from `self.conn_mgr`.
-        Also preserves compatibility with unit tests patching `db.get_connection`.
+        Also preserves compatibility with unit tests passing a mock connection.
         """
-        if hasattr(self.conn_mgr, "acquire_connection"):
+        if isinstance(self.conn_mgr, TeradataConnectionManager):
+            return self.conn_mgr.acquire_connection()
+        if hasattr(self.conn_mgr, "acquire_connection") and not hasattr(self.conn_mgr, "cursor"):
             return self.conn_mgr.acquire_connection()
         return self.conn_mgr
 
@@ -100,38 +109,57 @@ class TeradataStateDB:
 
     def close(self) -> None:
         """Closes all pooled Teradata connections managed by `self.conn_mgr`."""
-        self.conn_mgr.close_all()
+        if hasattr(self.conn_mgr, "close_all"):
+            self.conn_mgr.close_all()
 
-    def get_attempt(self, batch_id: str, source: str, run_attempt: Optional[int] = None) -> int:
+    def get_attempt(self, batch_id: str, source: Optional[str] = None, run_attempt: Optional[int] = None) -> int:
         """Returns the attempt number, falling back to cache or database max attempt."""
         if run_attempt is not None and run_attempt > 0:
             return run_attempt
-        cached = self.current_attempt.get((batch_id, source))
+        src = self._resolve_source(source)
+        cached = self.current_attempt.get((batch_id, src))
         if cached is not None and cached > 0:
             return cached
         with self._cursor() as cur:
             cur.execute(
                 f"SELECT COALESCE(MAX(RUN_ATTEMPT), 1) FROM {self.tech_db}.BATCH_RUNS WHERE BATCH_ID = ? AND SOURCE = ?",
-                (batch_id, source),
+                (batch_id, src),
             )
             row = cur.fetchone()
             att = int(row[0]) if row and row[0] is not None else 1
-            self.current_attempt[(batch_id, source)] = att
+            self.current_attempt[(batch_id, src)] = att
             return att
+
+    def start_batch_run(
+        self,
+        batch_id: str,
+        source: Optional[str] = None,
+        extract_timestamp: str = "",
+        entities_files: Optional[Union[Dict[str, Any], List[Tuple[str, str]]]] = None,
+        **kwargs: Any,
+    ) -> int:
+        """Alias for initialize_batch to support attempt history tracking (F2.11)."""
+        src = self._resolve_source(source)
+        return self.initialize_batch(
+            batch_id=batch_id,
+            source=src,
+            extract_timestamp=extract_timestamp,
+            entity_file_counts=entities_files or {},
+        )
 
     def initialize_batch(
         self,
         batch_id: str,
-        source: str,
+        source: Optional[str],
         extract_timestamp: str,
-        entity_file_counts: Union[Dict[str, int], List[Tuple[str, str]]],
+        entity_file_counts: Union[Dict[str, Any], List[Tuple[str, str]]],
     ) -> int:
         """
         Initializes a new attempt for batch in BATCH_RUNS and entity tasks in BATCH_TASKS (F2.11).
         Carries over previously SUCCESS entities so recoveries do not reload loaded data.
         Returns the new attempt number.
         """
-        src = _require_source(source)
+        src = self._resolve_source(source)
         run_date = datetime.now().strftime("%Y-%m-%d")
         start_time = current_timestamp_str()
         current_pid = os.getpid()
@@ -142,6 +170,13 @@ class TeradataStateDB:
             for item in entity_file_counts:
                 e_name = item[0]
                 counts[e_name] = counts.get(e_name, 0) + 1
+        elif isinstance(entity_file_counts, dict):
+            counts = {}
+            for k, v in entity_file_counts.items():
+                if isinstance(v, list):
+                    counts[k] = len(v)
+                else:
+                    counts[k] = int(v)
         else:
             counts = dict(entity_file_counts)
 
@@ -226,7 +261,7 @@ class TeradataStateDB:
         run_attempt: Optional[int] = None,
     ) -> List[Tuple[str, int]]:
         """Returns list of (ENTITY_NAME, RETRY_COUNT) for PENDING or FAILED tasks for current attempt."""
-        src = _require_source(source)
+        src = self._resolve_source(source)
         att = self.get_attempt(batch_id, src, run_attempt)
         with self._cursor() as cur:
             cur.execute(
@@ -249,7 +284,7 @@ class TeradataStateDB:
         run_attempt: Optional[int] = None,
     ) -> None:
         """Updates entity task status to RUNNING for current attempt (F1.4, F2.11)."""
-        src = _require_source(source)
+        src = self._resolve_source(source)
         att = self.get_attempt(batch_id, src, run_attempt)
         ts_now = current_timestamp_str()
         with self._cursor() as cur:
@@ -273,7 +308,7 @@ class TeradataStateDB:
         run_attempt: Optional[int] = None,
     ) -> None:
         """Updates entity task status to SUCCESS or FAILED for current attempt (F2.11)."""
-        src = _require_source(source)
+        src = self._resolve_source(source)
         att = self.get_attempt(batch_id, src, run_attempt)
         ts_now = current_timestamp_str()
         with self._cursor() as cur:
@@ -295,7 +330,7 @@ class TeradataStateDB:
         run_attempt: Optional[int] = None,
     ) -> bool:
         """Returns True if all expected entities for current attempt are SUCCESS, False otherwise."""
-        src = _require_source(source)
+        src = self._resolve_source(source)
         att = self.get_attempt(batch_id, src, run_attempt)
         with self._cursor() as cur:
             cur.execute(
@@ -305,7 +340,8 @@ class TeradataStateDB:
             """,
                 (batch_id, src, att),
             )
-            success_count = cur.fetchone()[0]
+            row = cur.fetchone()
+            success_count = int(row[0]) if (row and row[0] is not None) else 0
             return success_count == expected_entity_count
 
     def finish_batch(
@@ -316,7 +352,7 @@ class TeradataStateDB:
         run_attempt: Optional[int] = None,
     ) -> None:
         """Marks current attempt as finished (SUCCESS or FAILED) without deleting history (F2.11)."""
-        src = _require_source(source)
+        src = self._resolve_source(source)
         att = self.get_attempt(batch_id, src, run_attempt)
         ts_now = current_timestamp_str()
         with self._cursor() as cur:
@@ -331,8 +367,9 @@ class TeradataStateDB:
 
     def get_active_batch_run(self, source: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Returns active batch dict (including PROCESS_PID, PROCESS_HOST, RUN_ATTEMPT) if any attempt is RUNNING."""
+        src = source or self.default_source
         with self._cursor() as cur:
-            if source:
+            if src:
                 cur.execute(
                     f"""
                     SELECT BATCH_ID, SOURCE, EXTRACT_TIMESTAMP, START_TIME, PROCESS_PID, RUN_ATTEMPT, PROCESS_HOST 
@@ -340,7 +377,7 @@ class TeradataStateDB:
                     WHERE STATUS = 'RUNNING' AND SOURCE = ?
                     ORDER BY RUN_ATTEMPT DESC
                 """,
-                    (source,),
+                    (src,),
                 )
             else:
                 cur.execute(
@@ -366,7 +403,7 @@ class TeradataStateDB:
 
     def get_latest_attempt(self, batch_id: str, source: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Returns the latest attempt row for the given batch and source (F2.8, F2.11)."""
-        src = _require_source(source)
+        src = self._resolve_source(source)
         with self._cursor() as cur:
             cur.execute(
                 f"""
@@ -394,7 +431,7 @@ class TeradataStateDB:
         run_attempt: Optional[int] = None,
     ) -> None:
         """Marks current RUNNING attempt as FAILED."""
-        src = _require_source(source)
+        src = self._resolve_source(source)
         att = self.get_attempt(batch_id, src, run_attempt)
         ts_now = current_timestamp_str()
         with self._cursor() as cur:

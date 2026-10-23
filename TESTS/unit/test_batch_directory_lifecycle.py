@@ -215,10 +215,31 @@ class TestBatchDirectoryLifecycle(unittest.TestCase):
             for b_id, ts in [("9003", "20261016_100300"), ("9001", "20261016_100100"), ("9002", "20261016_100200")]:
                 cap = os.path.join(svc.loading_zone, f"BATCH_{ts}_{b_id}")
                 os.makedirs(cap, exist_ok=True)
-                with open(os.path.join(cap, f"MANIFEST_ORACLE_FUSION_{ts}_{b_id}.MF"), "w") as f:
-                    f.write(f"filename,checksum\nfile_{b_id}.csv,abc\n")
-                with open(os.path.join(cap, f"file_{b_id}.csv"), "w") as f:
-                    f.write("A\n1\n")
+                csv_file = f"file_userpvo-batch{b_id}-.csv"
+                csv_path = os.path.join(cap, csv_file)
+                with open(csv_path, "w", encoding="utf-8") as f:
+                    f.write("USER_ID,NAME\n1,Alice\n")
+                cs = compute_file_checksum(csv_path, "md5")
+                mf_name = f"MANIFEST_ORACLE_FUSION_{ts}_{b_id}.MF"
+                mf_path = os.path.join(cap, mf_name)
+                with open(mf_path, "w", encoding="utf-8") as f:
+                    f.write(f"filename,checksum\n{csv_file},{cs}\n")
+                mf_cs = compute_file_checksum(mf_path, "md5")
+                desc = BatchDescriptor.build(
+                    batch_id=b_id,
+                    source="ORACLE_FUSION",
+                    extract_timestamp=ts,
+                    manifest_filename=mf_name,
+                    manifest_checksum=mf_cs,
+                    files=[{
+                        "filename": csv_file,
+                        "target_table": "ERP_MSH_USER",
+                        "file_size_bytes": os.path.getsize(csv_path),
+                        "checksum": cs,
+                        "columns": ["USER_ID", "NAME"],
+                    }],
+                )
+                desc.save(os.path.join(cap, "batch_descriptor.json"))
 
             batches = svc.check_inflight_batch()
             self.assertEqual(len(batches), 3)

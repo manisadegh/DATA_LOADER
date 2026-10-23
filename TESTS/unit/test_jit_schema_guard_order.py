@@ -140,7 +140,7 @@ class TestJitSchemaGuardOrder(unittest.TestCase):
 
             mock_db = MagicMock()
             mock_db.get_active_batch_run.return_value = None
-            mock_db.get_pending_tasks.side_effect = lambda b_id, source=None: [("ERP_MSH_USER", f"file_userpvo-batch{b_id}-.csv", 0)]
+            mock_db.get_pending_tasks.side_effect = lambda b_id, source=None, **kwargs: [("ERP_MSH_USER", f"file_userpvo-batch{b_id}-.csv", 0)]
             mock_db.get_batch_summary.return_value = True
             mock_conn = MagicMock()
             mock_db.conn_mgr.acquire_connection.return_value.__enter__.return_value = mock_conn

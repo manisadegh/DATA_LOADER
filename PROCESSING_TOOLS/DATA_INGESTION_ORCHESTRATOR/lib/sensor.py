@@ -20,6 +20,7 @@ if _COMMON_DIR not in sys.path:
 
 from dataloader_core.capsule import BatchDescriptor
 from dataloader_core.checksum import compute_file_checksum
+from dataloader_core.exceptions import BatchValidationError
 from dataloader_core.manifest import parse_manifest_filename, read_manifest_entries
 from dataloader_core.mapping import EntityMapper, inspect_file_inner_extension
 
@@ -34,15 +35,22 @@ class QueuedBatchItem:
 
     batch_id: str
     source: str
-    extract_ts: str
-    raw_timestamp: str
-    manifest_path: str
-    manifest_basename: str
-    capsule_dir: str
+    extract_ts: str = ""
+    raw_timestamp: str = ""
+    manifest_path: str = ""
+    manifest_basename: str = ""
+    capsule_dir: str = ""
     descriptor_path: Optional[str] = None
     descriptor: Optional[BatchDescriptor] = None
     data_files: List[str] = field(default_factory=list)
     is_capsule: bool = True
+    extract_timestamp: Optional[str] = None
+
+    def __post_init__(self):
+        if self.extract_timestamp and not self.extract_ts:
+            self.extract_ts = self.extract_timestamp
+        if self.extract_ts and not self.raw_timestamp:
+            self.raw_timestamp = self.extract_ts
 
 
 def scan_landing_queue(
@@ -277,8 +285,11 @@ def verify_and_map_batch(
 
 def verify_descriptor_batch(
     active_zone: str,
-    descriptor: BatchDescriptor,
+    descriptor: Optional[Any] = None,
     verify_checksum: bool = False,
+    allow_orphan_files: bool = False,
+    mapper: Optional[Any] = None,
+    **kwargs: Any,
 ) -> Tuple[Dict[str, Dict[str, Any]], List[str]]:
     """
     Validates a batch using pre-computed BatchDescriptor:
@@ -287,6 +298,13 @@ def verify_descriptor_batch(
       3. Constructs entities_workload directly from descriptor.entities with header_columns.
     Returns: (entities_workload, validated_files_list)
     """
+    if not isinstance(descriptor, BatchDescriptor):
+        desc_path = os.path.join(active_zone, "batch_descriptor.json")
+        if os.path.exists(desc_path):
+            descriptor = BatchDescriptor.from_json_file(desc_path)
+        else:
+            raise BatchValidationError(f"Missing batch_descriptor.json in '{active_zone}'")
+
     validated_files: List[str] = []
     entities_workload: Dict[str, Dict[str, Any]] = {}
 
@@ -325,18 +343,19 @@ def verify_descriptor_batch(
             validated_files.append(fname)
 
     # OPS-01 Boundary: Verify no unmanifested/undeclared files exist in active_zone (F2.5)
-    manifested_set = set(validated_files)
-    for entry in os.listdir(active_zone):
-        if entry.startswith(".") or entry == "RAW" or entry == ".work":
-            continue
-        entry_path = os.path.join(active_zone, entry)
-        if os.path.isfile(entry_path):
-            if entry == "batch_descriptor.json" or entry.endswith(".MF"):
+    if not allow_orphan_files:
+        manifested_set = set(validated_files)
+        for entry in os.listdir(active_zone):
+            if entry.startswith(".") or entry == "RAW" or entry == ".work":
                 continue
-            if entry not in manifested_set:
-                raise ValueError(
-                    f"Boundary violation (OPS-01): Undeclared file '{entry}' found in batch directory '{active_zone}'."
-                )
+            entry_path = os.path.join(active_zone, entry)
+            if os.path.isfile(entry_path):
+                if entry == "batch_descriptor.json" or entry.endswith(".MF"):
+                    continue
+                if entry not in manifested_set:
+                    raise ValueError(
+                        f"Boundary violation (OPS-01): Undeclared file '{entry}' found in batch directory '{active_zone}'."
+                    )
 
         entities_workload[target_table] = {
             "target_table": target_table,
