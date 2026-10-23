@@ -61,6 +61,18 @@ try:
     mgr = TeradataConnectionManager(td_cfg, max_connections=1)
     with mgr.acquire_connection() as conn:
         with conn.cursor() as cur:
+            # Ensure Version 3.0 technical table columns exist in Teradata (F2.11)
+            for alter_sql in [
+                f"ALTER TABLE {tech_db}.BATCH_RUNS ADD RUN_ATTEMPT INTEGER DEFAULT 1 NOT NULL",
+                f"ALTER TABLE {tech_db}.BATCH_RUNS ADD PROCESS_HOST VARCHAR(255) CHARACTER SET UNICODE NOT CASESPECIFIC",
+                f"ALTER TABLE {tech_db}.BATCH_TASKS ADD RUN_ATTEMPT INTEGER DEFAULT 1 NOT NULL",
+                f"ALTER TABLE {tech_db}.BATCH_TASKS ADD FILE_COUNT INTEGER DEFAULT 1",
+                f"ALTER TABLE {tech_db}.BATCH_TASKS ADD TPT_JOB_NAME VARCHAR(128) CHARACTER SET UNICODE NOT CASESPECIFIC",
+            ]:
+                try:
+                    cur.execute(alter_sql)
+                except Exception:
+                    pass
             cur.execute(f"DELETE FROM {tech_db}.BATCH_TASKS WHERE BATCH_ID IN (\x279001\x27,\x279002\x27,\x279003\x27,\x279004\x27,\x279005\x27,\x279006\x27,\x279007\x27,\x279008\x27,\x279009\x27,\x279099\x27)")
             cur.execute(f"DELETE FROM {tech_db}.BATCH_RUNS WHERE BATCH_ID IN (\x279001\x27,\x279002\x27,\x279003\x27,\x279004\x27,\x279005\x27,\x279006\x27,\x279007\x27,\x279008\x27,\x279009\x27,\x279099\x27)")
             for tbl in ["ERP_MSH_USER", "CRM_MSH_CUSTOMER"]:

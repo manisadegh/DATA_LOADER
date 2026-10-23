@@ -112,6 +112,27 @@ class TeradataStateDB:
         if hasattr(self.conn_mgr, "close_all"):
             self.conn_mgr.close_all()
 
+    def _migrate_technical_schema(self) -> None:
+        """Applies Version 3.0 technical table migration in Teradata if columns are missing (F2.11)."""
+        logger.warning(f"Version 3.0 columns missing in {self.tech_db}. Applying auto-migration...")
+        with self.get_connection() as con:
+            cur_obj = con.cursor()
+            try:
+                for sql in [
+                    f"ALTER TABLE {self.tech_db}.BATCH_RUNS ADD RUN_ATTEMPT INTEGER DEFAULT 1 NOT NULL",
+                    f"ALTER TABLE {self.tech_db}.BATCH_RUNS ADD PROCESS_HOST VARCHAR(255) CHARACTER SET UNICODE NOT CASESPECIFIC",
+                    f"ALTER TABLE {self.tech_db}.BATCH_TASKS ADD RUN_ATTEMPT INTEGER DEFAULT 1 NOT NULL",
+                    f"ALTER TABLE {self.tech_db}.BATCH_TASKS ADD FILE_COUNT INTEGER DEFAULT 1",
+                    f"ALTER TABLE {self.tech_db}.BATCH_TASKS ADD TPT_JOB_NAME VARCHAR(128) CHARACTER SET UNICODE NOT CASESPECIFIC",
+                ]:
+                    try:
+                        cur_obj.execute(sql)
+                    except Exception:
+                        pass
+            finally:
+                if hasattr(cur_obj, "close"):
+                    cur_obj.close()
+
     def get_attempt(self, batch_id: str, source: Optional[str] = None, run_attempt: Optional[int] = None) -> int:
         """Returns the attempt number, falling back to cache or database max attempt."""
         if run_attempt is not None and run_attempt > 0:
@@ -120,6 +141,16 @@ class TeradataStateDB:
         cached = self.current_attempt.get((batch_id, src))
         if cached is not None and cached > 0:
             return cached
+        try:
+            return self._query_attempt(batch_id, src)
+        except Exception as exc:
+            err_msg = str(exc).upper()
+            if "5628" in err_msg or "RUN_ATTEMPT" in err_msg:
+                self._migrate_technical_schema()
+                return self._query_attempt(batch_id, src)
+            raise
+
+    def _query_attempt(self, batch_id: str, src: str) -> int:
         with self._cursor() as cur:
             cur.execute(
                 f"SELECT COALESCE(MAX(RUN_ATTEMPT), 1) FROM {self.tech_db}.BATCH_RUNS WHERE BATCH_ID = ? AND SOURCE = ?",
@@ -160,6 +191,22 @@ class TeradataStateDB:
         Returns the new attempt number.
         """
         src = self._resolve_source(source)
+        try:
+            return self._do_initialize_batch(batch_id, src, extract_timestamp, entity_file_counts)
+        except Exception as exc:
+            err_msg = str(exc).upper()
+            if "5628" in err_msg or "RUN_ATTEMPT" in err_msg or "PROCESS_HOST" in err_msg or "FILE_COUNT" in err_msg:
+                self._migrate_technical_schema()
+                return self._do_initialize_batch(batch_id, src, extract_timestamp, entity_file_counts)
+            raise
+
+    def _do_initialize_batch(
+        self,
+        batch_id: str,
+        src: str,
+        extract_timestamp: str,
+        entity_file_counts: Union[Dict[str, Any], List[Tuple[str, str]]],
+    ) -> int:
         run_date = datetime.now().strftime("%Y-%m-%d")
         start_time = current_timestamp_str()
         current_pid = os.getpid()
@@ -368,6 +415,16 @@ class TeradataStateDB:
     def get_active_batch_run(self, source: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Returns active batch dict (including PROCESS_PID, PROCESS_HOST, RUN_ATTEMPT) if any attempt is RUNNING."""
         src = source or self.default_source
+        try:
+            return self._query_active_batch_run(src)
+        except Exception as exc:
+            err_msg = str(exc).upper()
+            if "5628" in err_msg or "RUN_ATTEMPT" in err_msg or "PROCESS_HOST" in err_msg:
+                self._migrate_technical_schema()
+                return self._query_active_batch_run(src)
+            raise
+
+    def _query_active_batch_run(self, src: Optional[str]) -> Optional[Dict[str, Any]]:
         with self._cursor() as cur:
             if src:
                 cur.execute(
@@ -404,6 +461,16 @@ class TeradataStateDB:
     def get_latest_attempt(self, batch_id: str, source: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Returns the latest attempt row for the given batch and source (F2.8, F2.11)."""
         src = self._resolve_source(source)
+        try:
+            return self._query_latest_attempt(batch_id, src)
+        except Exception as exc:
+            err_msg = str(exc).upper()
+            if "5628" in err_msg or "RUN_ATTEMPT" in err_msg or "PROCESS_HOST" in err_msg:
+                self._migrate_technical_schema()
+                return self._query_latest_attempt(batch_id, src)
+            raise
+
+    def _query_latest_attempt(self, batch_id: str, src: str) -> Optional[Dict[str, Any]]:
         with self._cursor() as cur:
             cur.execute(
                 f"""

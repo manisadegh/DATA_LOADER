@@ -183,3 +183,6 @@ Following test execution analysis of the remaining 8 errors and 3 failures in `T
    - In `test_jit_schema_guard_order.py`: Updated `mock_db.get_pending_tasks.side_effect` lambda to accept `**kwargs` (including `run_attempt`).
 7. **Exception Import in `orchestrator_service.py`**:
    - Added `OrchestratorExecutionError` to `from dataloader_core.exceptions import (...)` in `orchestrator_service.py`, resolving `NameError` in `test_stray_regular_files_in_loading_zone_fails`.
+8. **Technical Schema Auto-Migration for Teradata Environments (`db_state.py`, `clean_data_and_logs.sh`)**:
+   - In `clean_data_and_logs.sh`: Added proactive execution of `ALTER TABLE` statements to ensure Version 3.0 columns (`RUN_ATTEMPT`, `PROCESS_HOST`, `FILE_COUNT`, `TPT_JOB_NAME`) exist in `BATCH_RUNS` and `BATCH_TASKS` in `DEV0SIDFINTCH`.
+   - In `db_state.py`: Added automatic schema migration retry (`_migrate_technical_schema()`) across `get_active_batch_run`, `get_attempt`, `initialize_batch`, and `get_latest_attempt` if Teradata returns Error 5628 (`Column RUN_ATTEMPT not found`).
