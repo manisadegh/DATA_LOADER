@@ -813,25 +813,36 @@ class OrchestratorService:
             "CURRENT_EXTRACT_TS": str(ctx.extract_ts),
         }
 
-        # Resolve post-ingestion tasks
-        post_tasks = None
+        # Resolve post-ingestion tasks (merge external source tasks with orchestrator config tasks)
+        post_tasks: List[Dict[str, Any]] = []
         if self.post_tasks_file and os.path.exists(self.post_tasks_file):
             try:
                 with open(self.post_tasks_file, "r", encoding="utf-8") as ptf:
-                    post_tasks = json.load(ptf)
+                    file_tasks = expand_env_vars(json.load(ptf))
+                    if isinstance(file_tasks, list):
+                        post_tasks.extend(file_tasks)
+                    elif isinstance(file_tasks, dict):
+                        src_specific = file_tasks.get(ctx.source, file_tasks.get("default", []))
+                        post_tasks.extend(src_specific)
                 self.logger.info(f"Loaded source post-tasks from file: '{self.post_tasks_file}'")
             except Exception as exc:
                 self.logger.error(f"Failed to read post-tasks file '{self.post_tasks_file}': {exc}")
                 return 1
 
-        if post_tasks is None:
-            cfg_post = self.orch_config.get("post_ingestion_tasks")
-            if isinstance(cfg_post, dict):
-                post_tasks = cfg_post.get(ctx.source) or cfg_post.get("default", [])
-            elif isinstance(cfg_post, list):
-                post_tasks = cfg_post
-            else:
-                post_tasks = []
+        cfg_post = self.orch_config.get("post_ingestion_tasks")
+        if isinstance(cfg_post, dict):
+            src_tasks = cfg_post.get(ctx.source, [])
+            default_tasks = cfg_post.get("default", [])
+            for t in src_tasks:
+                if t not in post_tasks:
+                    post_tasks.append(t)
+            for t in default_tasks:
+                if t not in post_tasks:
+                    post_tasks.append(t)
+        elif isinstance(cfg_post, list):
+            for t in cfg_post:
+                if t not in post_tasks:
+                    post_tasks.append(t)
 
         if self.skip_post_tasks:
             self.logger.info("[BYPASS] Post-tasks execution skipped via --skip-post-tasks flag.")

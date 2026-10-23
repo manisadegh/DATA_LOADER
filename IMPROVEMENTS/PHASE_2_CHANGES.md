@@ -211,3 +211,7 @@ Following the execution of the full scenario test suite where Unit Tests (103/10
    - In `tpt_worker.py` (lines 159 and 192), normalized the `-T` argument by converting ISO `T` separator to space (`str(extract_timestamp).replace("T", " ")`), strictly satisfying TPT Loader's regex expectation `YYYY-MM-DD HH:MM:SS`.
    - Updated `BATCH_CRASH/batch_descriptor.json` timestamp fields to use standard space-separated format `"2026-10-16 10:03:00"`.
    - Mirrored across both `DATA_LOADER/PROCESSING_TOOLS/DATA_INGESTION_ORCHESTRATOR/lib/tpt_worker.py` and `DATA_INGESTION_ORCHESTRATOR/lib/tpt_worker.py`.
+4. **Source & Global Post-Tasks Merge Parity (`orchestrator_service.py`)**:
+   - In `orchestrator_service.py` (lines 816-836), restored merging logic between external source-specific post-tasks (loaded via `--post-tasks-file`) and the orchestrator's global default post-tasks from `config.json`.
+   - Ensures that both the source-specific intake hook and the orchestrator's global analytics models execute in sequence for every successfully loaded batch capsule.
+   - Mirrored across both `DATA_LOADER/PROCESSING_TOOLS/DATA_INGESTION_ORCHESTRATOR/lib/orchestrator_service.py` and `DATA_INGESTION_ORCHESTRATOR/lib/orchestrator_service.py`.
