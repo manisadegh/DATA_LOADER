@@ -124,7 +124,15 @@ fi
 TPT_JOB_NAME=$(basename "${TPT_JOB_DIR}")
 
 # Stage payload file back into LOADING_ZONE/ORACLE_FUSION to simulate interrupted FastLoad recovery
-cp "${DATASETS_DIR}/BATCH_SPECIAL_COLS/file_userpvo-batch9009-.csv" "${DATA_DIR}/LOADING_ZONE/ORACLE_FUSION/"
+PAYLOAD_FILE="${DATA_DIR}/LOADING_ZONE/ORACLE_FUSION/file_userpvo-batch9009-.csv"
+cp "${DATASETS_DIR}/BATCH_SPECIAL_COLS/file_userpvo-batch9009-.csv" "${PAYLOAD_FILE}"
+
+# In Phase 2 Batch Capsule architecture, recreate files.lst if jobvars referenced one
+JOBVARS_FILE=$(grep -E "^FileName" "${TPT_JOB_DIR}/jobvars.txt" | sed -E "s/FileName[[:space:]]*=[[:space:]]*'([^']+)'.*/\1/")
+if [ -n "${JOBVARS_FILE}" ] && [ ! -f "${JOBVARS_FILE}" ]; then
+    mkdir -p "$(dirname "${JOBVARS_FILE}")"
+    echo "${PAYLOAD_FILE}" > "${JOBVARS_FILE}"
+fi
 
 bash "${UNLOCK_SCRIPT}" \
     -t ERP_MSH_USER \
@@ -134,7 +142,7 @@ bash "${UNLOCK_SCRIPT}" \
 UNLOCK_RC=$?
 
 # Remove staged recovery file from LOADING_ZONE after unlock completes
-rm -f "${DATA_DIR}/LOADING_ZONE/ORACLE_FUSION/file_userpvo-batch9009-.csv"
+rm -rf "${DATA_DIR}/LOADING_ZONE/ORACLE_FUSION"/*
 
 if [ ${UNLOCK_RC} -ne 0 ]; then
     echo ">>> [FAILURE] unlock_tpt_table.sh failed with RC=${UNLOCK_RC}"

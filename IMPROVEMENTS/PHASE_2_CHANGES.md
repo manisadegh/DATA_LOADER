@@ -190,3 +190,6 @@ Following test execution analysis of the remaining 8 errors and 3 failures in `T
    - In `db_state.py`: Included `EXTRACT_TIMESTAMP` in `INSERT INTO BATCH_TASKS` statements, resolving Error 3811 (`Column 'EXTRACT_TIMESTAMP' is NOT NULL`).
    - Added `_insert_tasks_with_filename` fallback in `db_state.py` to seamlessly populate `FILE_NAME` if legacy tables retain a NOT NULL constraint on `FILE_NAME`.
    - Updated `clean_data_and_logs.sh` and `_migrate_technical_schema()` to ensure `EXTRACT_TIMESTAMP` is added and `FILE_NAME` dropped from `BATCH_TASKS`.
+10. **TPT Table Unlock Resume in Batch Capsule Architecture (`unlock_tpt_table.sh`, `08_test_lock_recovery_and_schema_flags.sh`)**:
+    - In `08_test_lock_recovery_and_schema_flags.sh`: Recreated `files.lst` referencing the staged payload file prior to invoking `unlock_tpt_table.sh`, ensuring `tbuild` can open the input file list during FastLoad resume.
+    - In `unlock_tpt_table.sh`: Added defensive automatic reconstruction of `files.lst` when `FileList = 'Y'` and the original work area list is missing.

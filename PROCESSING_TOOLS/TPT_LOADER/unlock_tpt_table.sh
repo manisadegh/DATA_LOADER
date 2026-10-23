@@ -74,6 +74,21 @@ else
     [ -f "${JOBVARS}" ] && [ -f "${JOB_TPT}" ] || die 1 "jobvars.txt or job.tpt missing in ${LAST_JOB_DIR}"
 
     log INFO "Resuming identified job: ${JOB_NAME}. Attempting TPT restart..."
+
+    TARGET_FILE=$(grep -E "^FileName" "${JOBVARS}" | sed -E "s/FileName[[:space:]]*=[[:space:]]*'([^']+)'.*/\1/")
+    IS_FILE_LIST=$(grep -E "^FileList" "${JOBVARS}" | grep -c "'Y'")
+    if [ -n "${TARGET_FILE}" ] && [ ! -f "${TARGET_FILE}" ]; then
+        if [ "${IS_FILE_LIST}" -gt 0 ] || [ "$(basename "${TARGET_FILE}")" = "files.lst" ]; then
+            log WARNING "Target file list '${TARGET_FILE}' not found. Attempting reconstruction..."
+            WORK_PARENT=$(dirname "${TARGET_FILE}")
+            mkdir -p "${WORK_PARENT}"
+            CANDIDATE=$(find "$(dirname "${WORK_DIR}")/DATA/LOADING_ZONE" "$(dirname "${WORK_DIR}")/DATA/ARCHIVE_ZONE" /sg/local/sid/home/Dsidadm/DATA_LOADER/DATA/LOADING_ZONE /sg/local/sid/home/Dsidadm/DATA_LOADER/DATA/ARCHIVE_ZONE -type f -name "*${TARGET_TABLE}*" -o -name "*userpvo*.csv" 2>/dev/null | head -1)
+            if [ -n "${CANDIDATE}" ]; then
+                echo "${CANDIDATE}" > "${TARGET_FILE}"
+                log INFO "Reconstructed files.lst at '${TARGET_FILE}' pointing to '${CANDIDATE}'."
+            fi
+        fi
+    fi
     
     TBUILD_CMD="tbuild"
     command -v "${TBUILD_CMD}" >/dev/null || die 1 "tbuild not found in PATH."
