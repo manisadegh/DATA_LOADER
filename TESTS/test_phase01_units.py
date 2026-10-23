@@ -84,37 +84,37 @@ class TestPhase01Units(unittest.TestCase):
         try:
             # 2. auto_migrate_ddl=False on missing table -> raises RuntimeError without CREATE TABLE
             mock_conn = MagicMock()
-            with patch("lib.schema_guard.get_teradata_table_columns", return_value=None), \
-                 patch("lib.schema_guard.recreate_staging_table") as mock_recreate:
+            with patch("lib.schema_guard.get_teradata_table_columns", return_value=(None, 0)), \
+                 patch("lib.schema_guard.create_staging_table") as mock_create:
                 with self.assertRaises(RuntimeError) as ctx:
                     sync_entity_schema_if_drifted(
                         mock_conn, "DEV0SIDFINSTG", "ERP_MSH_USER", tmp_csv,
                         auto_migrate_ddl=False, load_mode="replace"
                     )
                 self.assertIn("auto_migrate_ddl is disabled", str(ctx.exception))
-                mock_recreate.assert_not_called()
+                mock_create.assert_not_called()
 
-            # 3. auto_migrate_ddl=False on drifted table -> raises RuntimeError without DROP TABLE
-            with patch("lib.schema_guard.get_teradata_table_columns", return_value=["USER_ID", "USER_NAME"]), \
-                 patch("lib.schema_guard.recreate_staging_table") as mock_recreate:
+            # 3. auto_migrate_ddl=False on drifted table -> raises RuntimeError without ALTER TABLE
+            with patch("lib.schema_guard.get_teradata_table_columns", return_value=(["USER_ID", "USER_NAME"], 2)), \
+                 patch("lib.schema_guard.alter_add_columns") as mock_alter:
                 with self.assertRaises(RuntimeError) as ctx:
                     sync_entity_schema_if_drifted(
                         mock_conn, "DEV0SIDFINSTG", "ERP_MSH_USER", tmp_csv,
                         auto_migrate_ddl=False, load_mode="replace"
                     )
                 self.assertIn("auto_migrate_ddl is disabled", str(ctx.exception))
-                mock_recreate.assert_not_called()
+                mock_alter.assert_not_called()
 
-            # 4. load_mode='append' on drifted table -> raises RuntimeError without DROP TABLE
-            with patch("lib.schema_guard.get_teradata_table_columns", return_value=["USER_ID", "USER_NAME"]), \
-                 patch("lib.schema_guard.recreate_staging_table") as mock_recreate:
+            # 4. Non-append drift (e.g. reordered columns) -> raises SchemaDriftError
+            with patch("lib.schema_guard.get_teradata_table_columns", return_value=(["USER_NAME", "USER_ID", "NEW_DRIFT_COL"], 2)), \
+                 patch("lib.schema_guard.alter_add_columns") as mock_alter:
                 with self.assertRaises(RuntimeError) as ctx:
                     sync_entity_schema_if_drifted(
                         mock_conn, "DEV0SIDFINSTG", "ERP_MSH_USER", tmp_csv,
-                        auto_migrate_ddl=True, load_mode="append"
+                        auto_migrate_ddl=True, load_mode="replace"
                     )
-                self.assertIn("append", str(ctx.exception))
-                mock_recreate.assert_not_called()
+                self.assertIn("only appended new columns can be migrated automatically", str(ctx.exception))
+                mock_alter.assert_not_called()
         finally:
             if os.path.exists(tmp_csv):
                 os.remove(tmp_csv)
