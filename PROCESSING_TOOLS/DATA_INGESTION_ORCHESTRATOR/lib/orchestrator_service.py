@@ -35,6 +35,7 @@ from dataloader_core.exceptions import (
     BatchValidationError,
     ConfigurationError,
     DataLoaderError,
+    OrchestratorExecutionError,
     SchemaSyncError,
 )
 from dataloader_core.locking import (

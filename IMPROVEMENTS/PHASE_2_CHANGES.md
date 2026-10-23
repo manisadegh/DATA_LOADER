@@ -181,3 +181,5 @@ Following test execution analysis of the remaining 8 errors and 3 failures in `T
 6. **Unit Test Updates (`test_batch_directory_lifecycle.py`, `test_jit_schema_guard_order.py`)**:
    - In `test_batch_directory_lifecycle.py` (`test_inflight_batches_sorted_fifo`): Added `batch_descriptor.json` creation for the 3 mock capsules so in-flight FIFO recovery validates cleanly.
    - In `test_jit_schema_guard_order.py`: Updated `mock_db.get_pending_tasks.side_effect` lambda to accept `**kwargs` (including `run_attempt`).
+7. **Exception Import in `orchestrator_service.py`**:
+   - Added `OrchestratorExecutionError` to `from dataloader_core.exceptions import (...)` in `orchestrator_service.py`, resolving `NameError` in `test_stray_regular_files_in_loading_zone_fails`.
