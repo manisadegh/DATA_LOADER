@@ -121,9 +121,11 @@ class TeradataStateDB:
                 for sql in [
                     f"ALTER TABLE {self.tech_db}.BATCH_RUNS ADD RUN_ATTEMPT INTEGER DEFAULT 1 NOT NULL",
                     f"ALTER TABLE {self.tech_db}.BATCH_RUNS ADD PROCESS_HOST VARCHAR(255) CHARACTER SET UNICODE NOT CASESPECIFIC",
+                    f"ALTER TABLE {self.tech_db}.BATCH_TASKS ADD EXTRACT_TIMESTAMP VARCHAR(50) CHARACTER SET UNICODE NOT CASESPECIFIC",
                     f"ALTER TABLE {self.tech_db}.BATCH_TASKS ADD RUN_ATTEMPT INTEGER DEFAULT 1 NOT NULL",
                     f"ALTER TABLE {self.tech_db}.BATCH_TASKS ADD FILE_COUNT INTEGER DEFAULT 1",
                     f"ALTER TABLE {self.tech_db}.BATCH_TASKS ADD TPT_JOB_NAME VARCHAR(128) CHARACTER SET UNICODE NOT CASESPECIFIC",
+                    f"ALTER TABLE {self.tech_db}.BATCH_TASKS DROP FILE_NAME",
                 ]:
                     try:
                         cur_obj.execute(sql)
@@ -274,32 +276,83 @@ class TeradataStateDB:
                 (batch_id, src, extract_timestamp, run_date, start_time, current_pid, new_attempt, current_host),
             )
 
-            for entity_name, file_count in counts.items():
-                if entity_name in success_entities:
-                    st = success_entities[entity_name]
-                    logger.info(
-                        f"[{entity_name}] Reusing previously SUCCESS entity task from attempt {prev_attempt} (carried over)."
-                    )
-                    cur.execute(
-                        f"""
-                        INSERT INTO {self.tech_db}.BATCH_TASKS 
-                        (BATCH_ID, SOURCE, RUN_ATTEMPT, ENTITY_NAME, FILE_COUNT, STATUS, START_TIME, END_TIME, RETRY_COUNT, TPT_JOB_NAME) 
-                        VALUES (?, ?, ?, ?, ?, 'SUCCESS', ?, ?, ?, ?)
-                    """,
-                        (batch_id, src, new_attempt, entity_name, st[1], st[4], st[5], st[2], st[3]),
-                    )
+            try:
+                self._insert_tasks(cur, batch_id, src, extract_timestamp, new_attempt, counts, success_entities)
+            except Exception as exc:
+                err_msg = str(exc).upper()
+                if "FILE_NAME" in err_msg and "NOT NULL" in err_msg:
+                    self._insert_tasks_with_filename(cur, batch_id, src, extract_timestamp, new_attempt, counts, success_entities)
                 else:
-                    cur.execute(
-                        f"""
-                        INSERT INTO {self.tech_db}.BATCH_TASKS 
-                        (BATCH_ID, SOURCE, RUN_ATTEMPT, ENTITY_NAME, FILE_COUNT, STATUS, RETRY_COUNT) 
-                        VALUES (?, ?, ?, ?, ?, 'PENDING', 0)
-                    """,
-                        (batch_id, src, new_attempt, entity_name, file_count),
-                    )
+                    raise
 
         self.current_attempt[(batch_id, src)] = new_attempt
         return new_attempt
+
+    def _insert_tasks(
+        self,
+        cur,
+        batch_id: str,
+        src: str,
+        extract_timestamp: str,
+        new_attempt: int,
+        counts: Dict[str, int],
+        success_entities: Dict[str, Tuple[Any, ...]],
+    ) -> None:
+        for entity_name, file_count in counts.items():
+            if entity_name in success_entities:
+                st = success_entities[entity_name]
+                logger.info(
+                    f"[{entity_name}] Reusing previously SUCCESS entity task from attempt {new_attempt - 1} (carried over)."
+                )
+                cur.execute(
+                    f"""
+                    INSERT INTO {self.tech_db}.BATCH_TASKS 
+                    (BATCH_ID, SOURCE, EXTRACT_TIMESTAMP, RUN_ATTEMPT, ENTITY_NAME, FILE_COUNT, STATUS, START_TIME, END_TIME, RETRY_COUNT, TPT_JOB_NAME) 
+                    VALUES (?, ?, ?, ?, ?, ?, 'SUCCESS', ?, ?, ?, ?)
+                """,
+                    (batch_id, src, extract_timestamp, new_attempt, entity_name, st[1], st[4], st[5], st[2], st[3]),
+                )
+            else:
+                cur.execute(
+                    f"""
+                    INSERT INTO {self.tech_db}.BATCH_TASKS 
+                    (BATCH_ID, SOURCE, EXTRACT_TIMESTAMP, RUN_ATTEMPT, ENTITY_NAME, FILE_COUNT, STATUS, RETRY_COUNT) 
+                    VALUES (?, ?, ?, ?, ?, ?, 'PENDING', 0)
+                """,
+                    (batch_id, src, extract_timestamp, new_attempt, entity_name, file_count),
+                )
+
+    def _insert_tasks_with_filename(
+        self,
+        cur,
+        batch_id: str,
+        src: str,
+        extract_timestamp: str,
+        new_attempt: int,
+        counts: Dict[str, int],
+        success_entities: Dict[str, Tuple[Any, ...]],
+    ) -> None:
+        for entity_name, file_count in counts.items():
+            fname = f"{entity_name} ({file_count} files)"
+            if entity_name in success_entities:
+                st = success_entities[entity_name]
+                cur.execute(
+                    f"""
+                    INSERT INTO {self.tech_db}.BATCH_TASKS 
+                    (BATCH_ID, SOURCE, EXTRACT_TIMESTAMP, RUN_ATTEMPT, ENTITY_NAME, FILE_COUNT, FILE_NAME, STATUS, START_TIME, END_TIME, RETRY_COUNT, TPT_JOB_NAME) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'SUCCESS', ?, ?, ?, ?)
+                """,
+                    (batch_id, src, extract_timestamp, new_attempt, entity_name, st[1], fname, st[4], st[5], st[2], st[3]),
+                )
+            else:
+                cur.execute(
+                    f"""
+                    INSERT INTO {self.tech_db}.BATCH_TASKS 
+                    (BATCH_ID, SOURCE, EXTRACT_TIMESTAMP, RUN_ATTEMPT, ENTITY_NAME, FILE_COUNT, FILE_NAME, STATUS, RETRY_COUNT) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', 0)
+                """,
+                    (batch_id, src, extract_timestamp, new_attempt, entity_name, file_count, fname),
+                )
 
     def get_pending_tasks(
         self,

@@ -186,3 +186,7 @@ Following test execution analysis of the remaining 8 errors and 3 failures in `T
 8. **Technical Schema Auto-Migration for Teradata Environments (`db_state.py`, `clean_data_and_logs.sh`)**:
    - In `clean_data_and_logs.sh`: Added proactive execution of `ALTER TABLE` statements to ensure Version 3.0 columns (`RUN_ATTEMPT`, `PROCESS_HOST`, `FILE_COUNT`, `TPT_JOB_NAME`) exist in `BATCH_RUNS` and `BATCH_TASKS` in `DEV0SIDFINTCH`.
    - In `db_state.py`: Added automatic schema migration retry (`_migrate_technical_schema()`) across `get_active_batch_run`, `get_attempt`, `initialize_batch`, and `get_latest_attempt` if Teradata returns Error 5628 (`Column RUN_ATTEMPT not found`).
+9. **`BATCH_TASKS` `EXTRACT_TIMESTAMP` and Legacy `FILE_NAME` Alignment (`db_state.py`, `clean_data_and_logs.sh`)**:
+   - In `db_state.py`: Included `EXTRACT_TIMESTAMP` in `INSERT INTO BATCH_TASKS` statements, resolving Error 3811 (`Column 'EXTRACT_TIMESTAMP' is NOT NULL`).
+   - Added `_insert_tasks_with_filename` fallback in `db_state.py` to seamlessly populate `FILE_NAME` if legacy tables retain a NOT NULL constraint on `FILE_NAME`.
+   - Updated `clean_data_and_logs.sh` and `_migrate_technical_schema()` to ensure `EXTRACT_TIMESTAMP` is added and `FILE_NAME` dropped from `BATCH_TASKS`.

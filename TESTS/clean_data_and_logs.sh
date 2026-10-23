@@ -65,9 +65,11 @@ try:
             for alter_sql in [
                 f"ALTER TABLE {tech_db}.BATCH_RUNS ADD RUN_ATTEMPT INTEGER DEFAULT 1 NOT NULL",
                 f"ALTER TABLE {tech_db}.BATCH_RUNS ADD PROCESS_HOST VARCHAR(255) CHARACTER SET UNICODE NOT CASESPECIFIC",
+                f"ALTER TABLE {tech_db}.BATCH_TASKS ADD EXTRACT_TIMESTAMP VARCHAR(50) CHARACTER SET UNICODE NOT CASESPECIFIC",
                 f"ALTER TABLE {tech_db}.BATCH_TASKS ADD RUN_ATTEMPT INTEGER DEFAULT 1 NOT NULL",
                 f"ALTER TABLE {tech_db}.BATCH_TASKS ADD FILE_COUNT INTEGER DEFAULT 1",
                 f"ALTER TABLE {tech_db}.BATCH_TASKS ADD TPT_JOB_NAME VARCHAR(128) CHARACTER SET UNICODE NOT CASESPECIFIC",
+                f"ALTER TABLE {tech_db}.BATCH_TASKS DROP FILE_NAME",
             ]:
                 try:
                     cur.execute(alter_sql)
