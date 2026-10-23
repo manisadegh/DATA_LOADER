@@ -376,10 +376,8 @@ class OrchestratorService:
         if self.source_override and gov_dir:
             gov_dir = os.path.dirname(gov_dir)
         self.slot_governor = UtilitySlotGovernor(
+            slot_dir=gov_dir,
             max_slots=max_slots,
-            slots_dir=gov_dir,
-            timeout_sec=self.lock_timeout,
-            poll_interval_sec=self.poll_interval,
             logger=self.logger,
         )
         self.orch_config["slot_governor"] = self.slot_governor

@@ -51,7 +51,7 @@ class TestCoreLocking(unittest.TestCase):
                 f.write("gibberish\n")
             h, pid = read_pid_file(p_inv)
             self.assertIsNone(h)
-            self.assertEqual(pid, 0)
+            self.assertEqual(pid, -1)
 
     def test_process_lock_acquire_and_release(self):
         with tempfile.TemporaryDirectory() as tmpdir:

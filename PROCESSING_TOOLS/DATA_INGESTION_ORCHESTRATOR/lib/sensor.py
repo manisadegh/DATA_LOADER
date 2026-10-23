@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 _COMMON_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "COMMON"))
@@ -41,6 +41,8 @@ class QueuedBatchItem:
     capsule_dir: str
     descriptor_path: Optional[str] = None
     descriptor: Optional[BatchDescriptor] = None
+    data_files: List[str] = field(default_factory=list)
+    is_capsule: bool = True
 
 
 def scan_landing_queue(

@@ -143,3 +143,17 @@
 - [x] Root standalone components mirrored to `DATA_LOADER/PROCESSING_TOOLS/`.
 - [x] 7 new unit test suites created under `DATA_LOADER/TESTS/unit/`.
 - [x] Legacy flat-manifest and `"dummy"` checksums cleaned from unit tests.
+
+---
+
+## 4. Test Suite Alignment & Compatibility Fixes (Iteration 2)
+
+Following pre-flight test discovery in native Unix DEV:
+1. **`UtilitySlotGovernor` Signature**: Updated `__init__` in `locking.py` to accept `slot_dir`, `slots_dir`, `max_slots`, `logger`, and kwargs for flexible instantiation across all callers and test scenarios.
+2. **`QueuedBatchItem` Attributes**: Added `is_capsule = True` and `data_files: List[str]` to `QueuedBatchItem` in `sensor.py` for backward compatibility with existing unit test assertions.
+3. **`BatchDescriptor` Factory & Persistence**: Added `@classmethod build(...)` and `save(...)` to `BatchDescriptor` in `capsule.py` for structured capsule metadata creation.
+4. **`TeradataStateDB` Flexible Instantiation**: Added support for mock connection managers and `tech_db` kwarg in `TeradataStateDB.__init__` and guarded against empty `row` in `initialize_batch`.
+5. **Python 3.9 C-Stat Compatibility**: In `test_batch_directory_lifecycle.py`, implemented `FakeStatResult` with integer `st_mode` so `stat.S_ISDIR` evaluates cleanly without `TypeError` under Python 3.9.
+6. **Manifest Patterns**: Updated `test_core_manifest_and_capsule.py` to verify that deleted legacy patterns (3 & 4) raise `ValueError` as specified in F2.6.
+7. **`read_pid_file` Assertion**: Adjusted `test_core_locking.py` to assert `pid == -1` on invalid/unparseable lock files.
+8. **Phase 1 Units Query Count**: Updated `test_phase01_units.py` to account for attempt lookup query (`SELECT COALESCE(MAX(RUN_ATTEMPT), 1) ...`) executed on cold cache.

@@ -245,13 +245,23 @@ class TestBatchDirectoryLifecycle(unittest.TestCase):
 
             # Mock os.stat to return differing st_dev values
             orig_stat = os.stat
+            class FakeStatResult:
+                def __init__(self, orig, dev):
+                    self.st_dev = dev
+                    self.st_mode = int(orig.st_mode)
+                    self.st_ino = int(orig.st_ino)
+                    self.st_nlink = int(orig.st_nlink)
+                    self.st_uid = int(orig.st_uid)
+                    self.st_gid = int(orig.st_gid)
+                    self.st_size = int(orig.st_size)
+                    self.st_atime = float(orig.st_atime)
+                    self.st_mtime = float(orig.st_mtime)
+                    self.st_ctime = float(orig.st_ctime)
+
             def fake_stat(path, *args, **kwargs):
                 st = orig_stat(path, *args, **kwargs)
-                if "LOADING_ZONE" in path:
-                    # Return distinct st_dev
-                    mock_st = MagicMock(wraps=st)
-                    mock_st.st_dev = 99999
-                    return mock_st
+                if "LOADING_ZONE" in str(path):
+                    return FakeStatResult(st, 99999)
                 return st
 
             with patch("os.stat", side_effect=fake_stat):

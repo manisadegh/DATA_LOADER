@@ -43,10 +43,9 @@ class TestDbStateHistory(unittest.TestCase):
         mock_conn.__enter__.return_value = mock_conn
         mock_cur.__enter__.return_value = mock_cur
 
-        # No prior attempt (max attempt None, no active run)
+        # No prior attempt (max attempt 0, no active run)
         mock_cur.fetchone.side_effect = [
-            None,          # SELECT MAX(RUN_ATTEMPT) -> None
-            None,          # SELECT STATUS, PROCESS_PID from prev attempt -> None
+            (0,),          # SELECT COALESCE(MAX(RUN_ATTEMPT), 0) -> 0
         ]
 
         db = TeradataStateDB(mock_conn, tech_db="TEST_TCH", default_source="ORACLE_FUSION")

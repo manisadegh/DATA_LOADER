@@ -41,16 +41,13 @@ class TestCoreManifestAndCapsule(unittest.TestCase):
         self.assertEqual(m2.extract_timestamp_raw, "20261013_131116")
         self.assertFalse(m2.batch_id_from_manifest)
 
-        # Pattern 3: MANIFEST-batch<ID>-.MF
-        m3 = parse_manifest_filename("MANIFEST-batch847376-.MF", default_source="CRM")
-        self.assertEqual(m3.source, "CRM")
-        self.assertEqual(m3.batch_id, "847376")
-        self.assertTrue(m3.batch_id_from_manifest)
+        # Pattern 3: MANIFEST-batch<ID>-.MF (deleted in F2.6, must raise ValueError)
+        with self.assertRaises(ValueError):
+            parse_manifest_filename("MANIFEST-batch847376-.MF", default_source="CRM")
 
-        # Pattern 4: MANIFEST_<TOKEN>.MF
-        m4 = parse_manifest_filename("MANIFEST_9099.MF", default_source="ORACLE_FUSION")
-        self.assertEqual(m4.batch_id, "9099")
-        self.assertTrue(m4.batch_id_from_manifest)
+        # Pattern 4: MANIFEST_<TOKEN>.MF (deleted in F2.6, must raise ValueError)
+        with self.assertRaises(ValueError):
+            parse_manifest_filename("MANIFEST_9099.MF", default_source="ORACLE_FUSION")
 
         # Payload batch ID extraction
         bid = extract_batch_id_from_filenames(["DT2_file_invoiceheaderextractpvo-batch847376139-20261013_131116.zip"])

@@ -131,6 +131,49 @@ class BatchDescriptor:
             json.dump(self.to_dict(), f, indent=2)
         return path
 
+    def save(self, path: str) -> str:
+        return self.to_json_file(path)
+
+    @classmethod
+    def build(
+        cls,
+        batch_id: str,
+        source: str,
+        extract_timestamp: str,
+        manifest_filename: str,
+        files: Optional[List[Dict[str, Any]]] = None,
+        manifest_checksum: Optional[str] = None,
+        **kwargs: Any,
+    ) -> "BatchDescriptor":
+        entities: Dict[str, Dict[str, Any]] = {}
+        if files:
+            for f in files:
+                tbl = f.get("target_table") or "DEFAULT"
+                fn = f.get("filename")
+                if tbl not in entities:
+                    entities[tbl] = {
+                        "files": [],
+                        "file_sizes": {},
+                        "checksums": {},
+                        "header_columns": f.get("columns", []),
+                    }
+                if fn:
+                    entities[tbl]["files"].append(fn)
+                    if "file_size_bytes" in f:
+                        entities[tbl]["file_sizes"][fn] = f["file_size_bytes"]
+                    if "checksum" in f:
+                        entities[tbl]["checksums"][fn] = f["checksum"]
+        return cls(
+            batch_id=batch_id,
+            source=source,
+            extract_timestamp_raw=extract_timestamp,
+            extract_timestamp_iso=extract_timestamp,
+            manifest_filename=manifest_filename,
+            manifest_checksum=manifest_checksum,
+            entities=entities,
+            **kwargs,
+        )
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "BatchDescriptor":
         return cls(

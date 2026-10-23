@@ -317,11 +317,14 @@ class UtilitySlotGovernor:
 
     def __init__(
         self,
-        slot_dir: str,
+        slot_dir: Optional[str] = None,
         max_slots: int = 8,
         logger: Optional[logging.Logger] = None,
+        slots_dir: Optional[str] = None,
+        **kwargs: Any,
     ) -> None:
-        self.slot_dir = os.path.abspath(slot_dir)
+        actual_dir = slot_dir or slots_dir or os.path.join(tempfile.gettempdir(), ".utility_slots")
+        self.slot_dir = os.path.abspath(actual_dir)
         self.max_slots = max(1, int(max_slots))
         self.logger = logger or logging.getLogger("dataloader_core.locking.slot_governor")
         os.makedirs(self.slot_dir, exist_ok=True)

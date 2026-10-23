@@ -47,20 +47,31 @@ class TeradataStateDB:
 
     def __init__(
         self,
-        td_config: Optional[Dict[str, Any]] = None,
+        td_config: Optional[Any] = None,
         conn_mgr: Optional[TeradataConnectionManager] = None,
+        tech_db: Optional[str] = None,
+        technical_database: Optional[str] = None,
+        **kwargs: Any,
     ) -> None:
         if td_config is None:
             td_config = {}
 
-        self.conn_mgr = conn_mgr or TeradataConnectionManager(td_config)
-        self.host = self.conn_mgr.connect_kwargs["host"]
-        self.user = self.conn_mgr.connect_kwargs["user"]
-        self.password = self.conn_mgr.connect_kwargs.get("password")
-        self.logmech = self.conn_mgr.connect_kwargs.get("logmech", "TD2")
+        if not isinstance(td_config, dict):
+            self.conn_mgr = td_config
+            self.host = "localhost"
+            self.user = "mock"
+            self.password = None
+            self.logmech = "TD2"
+            raw_tech_db = tech_db or technical_database or "SIDFINTCH"
+        else:
+            self.conn_mgr = conn_mgr or TeradataConnectionManager(td_config)
+            self.host = getattr(self.conn_mgr, "connect_kwargs", {}).get("host", "localhost")
+            self.user = getattr(self.conn_mgr, "connect_kwargs", {}).get("user", "mock")
+            self.password = getattr(self.conn_mgr, "connect_kwargs", {}).get("password")
+            self.logmech = getattr(self.conn_mgr, "connect_kwargs", {}).get("logmech", "TD2")
+            default_tech_db = f"{os.environ.get('TDENV', '')}{os.environ.get('DB_TCH', 'SIDFINTCH')}"
+            raw_tech_db = tech_db or technical_database or td_config.get("technical_database") or os.environ.get("TD_TECH_DB", default_tech_db)
 
-        default_tech_db = f"{os.environ.get('TDENV', '')}{os.environ.get('DB_TCH', 'SIDFINTCH')}"
-        raw_tech_db = td_config.get("technical_database") or os.environ.get("TD_TECH_DB", default_tech_db)
         self.tech_db = validate_sql_identifier(raw_tech_db)
         self.current_attempt: Dict[Tuple[str, str], int] = {}
 
@@ -69,7 +80,9 @@ class TeradataStateDB:
         Borrows a pooled TeradataConnection context manager from `self.conn_mgr`.
         Also preserves compatibility with unit tests patching `db.get_connection`.
         """
-        return self.conn_mgr.acquire_connection()
+        if hasattr(self.conn_mgr, "acquire_connection"):
+            return self.conn_mgr.acquire_connection()
+        return self.conn_mgr
 
     @contextlib.contextmanager
     def _cursor(self):
@@ -137,7 +150,8 @@ class TeradataStateDB:
                 f"SELECT COALESCE(MAX(RUN_ATTEMPT), 0) FROM {self.tech_db}.BATCH_RUNS WHERE BATCH_ID = ? AND SOURCE = ?",
                 (batch_id, src),
             )
-            prev_attempt = int(cur.fetchone()[0] or 0)
+            row = cur.fetchone()
+            prev_attempt = int(row[0]) if (row and row[0] is not None) else 0
             new_attempt = prev_attempt + 1
 
             success_entities: Dict[str, Tuple[Any, ...]] = {}

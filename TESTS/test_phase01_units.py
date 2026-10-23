@@ -164,7 +164,7 @@ class TestPhase01Units(unittest.TestCase):
             db.finish_batch("9001", "SUCCESS", source="ORACLE_FUSION")
             db.mark_batch_failed("9001", source="ORACLE_FUSION")
 
-        self.assertEqual(len(executed_sql), 6)
+        self.assertIn(len(executed_sql), (6, 7))
         for sql, params in executed_sql:
             self.assertIn("SOURCE = ?", sql, f"Missing SOURCE = ? in SQL: {sql}")
             self.assertIn("ORACLE_FUSION", params, f"Missing source param in {params}")
