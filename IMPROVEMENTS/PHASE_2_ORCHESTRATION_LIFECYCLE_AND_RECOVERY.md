@@ -577,8 +577,8 @@ Files: `COMMON/dataloader_core/db.py`
 
 ## Phase 2 exit checklist (technical lead)
 
-- [ ] All 12 items merged with their tests; Phase 1 fully merged before F2.2 starts.
-- [ ] On DEV: deliver three batches, `kill -9` the orchestrator during the second one's TPT, restart → batches finish in order, archives contain byte-identical payloads, `BATCH_RUNS` shows attempt 2 for the killed batch.
-- [ ] On DEV: deliver the same batch twice → second copy in `QUARANTINE`, first copy loaded normally.
-- [ ] `DECISIONS.md` contains D1 and D4.
-- [ ] Documentation listed under "Documentation impact" updated; operations playbook has a "QUARANTINE" section and a "stray files in LOADING_ZONE root" section.
+- [x] All 12 items merged with their tests; Phase 1 fully merged before F2.2 starts.
+- [x] On DEV: deliver three batches, `kill -9` the orchestrator during the second one's TPT, restart → batches finish in order, archives contain byte-identical payloads, `BATCH_RUNS` shows attempt 2 for the killed batch.
+- [x] On DEV: deliver the same batch twice → second copy in `QUARANTINE`, first copy loaded normally.
+- [x] `DECISIONS.md` contains D1 and D4 (both settled).
+- [x] Documentation listed under "Documentation impact" updated; operations playbook has a "QUARANTINE" section and a "stray files in LOADING_ZONE root" section.

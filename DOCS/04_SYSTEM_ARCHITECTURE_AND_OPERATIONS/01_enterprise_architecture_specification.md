@@ -88,28 +88,30 @@ DATA_LOADER/
 
 ### Storage Transition Matrix
 
+> [!IMPORTANT]
+> **Same-Filesystem Requirement**: `LANDING_ZONE`, `LOADING_ZONE`, and `ARCHIVE_ZONE` must reside on the same physical filesystem. The Orchestrator verifies device identifiers (`os.stat().st_dev`) at startup to ensure directory-level transitions are executed as atomic POSIX renames (`os.replace`) without cross-device copying.
+
 ```mermaid
 stateDiagram-v2
     [*] --> DROP_ZONE : Asynchronous Arrival in DROP_ZONE/SOURCE/
     DROP_ZONE --> LANDING_ZONE : Atomic Stage & Publish Capsule (BATCH_TS_ID)
-    LANDING_ZONE --> LOADING_ZONE : Atomic Unpack into Private SAS
+    LANDING_ZONE --> LOADING_ZONE : Atomic Directory Dequeue (os.replace)
     state LOADING_ZONE {
-        [*] --> Decompressed : Unpack .zip / .gz
-        Decompressed --> HeaderStripped : Solution A (Chunk 1 stripped)
-        HeaderStripped --> JIT_SchemaSync : Schema Guard Auto-DDL
-        JIT_SchemaSync --> TPT_Loaded : Stream via load_csv_generic.sh (-C -M 2)
-        TPT_Loaded --> Purged : Delete temp .tmp & marker files
+        [*] --> WorkAreaSetup : Build .work/ENTITY/files.lst (hardlinks or safe archive extraction)
+        WorkAreaSetup --> JIT_SchemaSync : Schema Guard Auto-DDL (NOPI VARCHAR(4000))
+        JIT_SchemaSync --> TPT_Loaded : Stream via load_csv_generic.sh (-L files.lst -C -M 2)
+        TPT_Loaded --> WorkCleaned : Clean .work/ temporary area (payload preserved byte-identical)
     }
-    LOADING_ZONE --> ARCHIVE_ZONE : Move Batch Capsule on 100% Success
-    ARCHIVE_ZONE --> [*] : Vaulted / Purge Policy
+    LOADING_ZONE --> ARCHIVE_ZONE : Atomic Capsule Move (os.replace) on 100% Success
+    ARCHIVE_ZONE --> [*] : Vaulted / Retention Policy
 ```
 
 | Lifecycle Zone | Access Characteristics | File Ingestion State | Retention Policy |
 |---|---|---|---|
-| `DROP_ZONE/<SOURCE>/` | Read/Write (BICC/SFTP & Feeder) | Unstable / Asynchronous Multi-Batch | Cleared as batches are staged. (Files at root of `DROP_ZONE` are ignored). |
-| `LANDING_ZONE/<SOURCE>/` | Read/Write (Feeder & Orchestrator) | 1..N Queued Capsules (`BATCH_<TS>_<ID>/`) | Cleared as each capsule is unpacked into `LOADING_ZONE`. |
-| `LOADING_ZONE/<SOURCE>/` | Private Isolated SAS (Orchestrator) | Decompressed CSV/PECSV and marker files | Cleared at end of batch processing. |
-| `ARCHIVE_ZONE/<SOURCE>/<YYYY-MM>/BATCH_<ID>_<TS>/` | Append-Only (Orchestrator) | Consolidated Batch Capsules containing data files, standardized manifest, `batch_descriptor.json`, and `RAW/` vault | Configurable retention (e.g. 90 days / permanent). |
+| `DROP_ZONE/<SOURCE>/` | Read/Write (BICC/SFTP & Feeder) | Unstable / Asynchronous Multi-Batch | Cleared as batches are staged. (Files at root of `DROP_ZONE` are ignored; duplicates quarantined). |
+| `LANDING_ZONE/<SOURCE>/` | Read/Write (Feeder & Orchestrator) | 1..N Queued Capsules (`BATCH_<TS>_<ID>/`) | Atomic single directory move (`os.replace`) into `LOADING_ZONE`. Stray root files strictly forbidden. |
+| `LOADING_ZONE/<SOURCE>/` | Private Isolated SAS (Orchestrator) | Self-contained capsule (`BATCH_<TS>_<ID>/`) with `.work/` | The capsule's presence in LOADING **is** the in-flight marker. Renamed to `ARCHIVE_ZONE` upon completion. |
+| `ARCHIVE_ZONE/<SOURCE>/<YYYY-MM>/BATCH_<ID>_<TS>/` | Append-Only (Orchestrator) | Consolidated Batch Capsules containing byte-identical payload files, standardized manifest, `batch_descriptor.json`, and `RAW/` vault | Configurable retention (e.g. 90 days / permanent). Existing batches moved aside to `.previous_<epoch>`. |
 
 ---
 

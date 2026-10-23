@@ -183,6 +183,36 @@ flowchart TD
 
 ---
 
+### RUNBOOK 08: Automated Capsule QUARANTINE and Stray Root File Remediation
+- **Symptom 1**: A duplicate extract is delivered, or a crashed intake left a partial staging capsule, logging:
+  `[QUARANTINE] Staging directory '.staging_BATCH_...' moved to QUARANTINE` or `Duplicate batch capsule quarantined`.
+- **Automated Quarantine Behavior**:
+  - The framework never overwrites existing batches silently.
+  - If a batch capsule with matching `(source, batch_id, ts)` already exists in `LANDING_ZONE`, `LOADING_ZONE`, or `ARCHIVE_ZONE`, the incoming duplicate is moved to `DROP_ZONE/<SOURCE>/QUARANTINE/<YYYYMMDD_HHMMSS>_<batch_id>/` along with a `REASON.txt` file explaining the conflict.
+  - At intake controller startup, any incomplete `.staging_BATCH_*` directories left over from crashed runs are moved directly to `LANDING_ZONE/<SOURCE>/QUARANTINE/<name>_<epoch>/` for operator inspection.
+- **Symptom 2**: Orchestrator raises:
+  `Stray regular file(s) found at root of LOADING_ZONE: ['stray_file.csv']. Manual cleanup required.`
+- **Remediation Procedure**:
+  Under Phase 2 Batch Capsule Architecture, `LOADING_ZONE/<SOURCE>/` must only contain active capsule directories (`BATCH_<TS>_<ID>/`) and `.orchestrator.pid`.
+  1. Inspect the root of the loading zone:
+     ```bash
+     ls -la /sg/local/sid/home/Dsidadm/DATA_LOADER/DATA/LOADING_ZONE/<SOURCE>/
+     ```
+  2. If the stray file belongs to an active batch, move it into the appropriate capsule folder:
+     ```bash
+     mv /sg/local/sid/home/Dsidadm/DATA_LOADER/DATA/LOADING_ZONE/<SOURCE>/<stray_file> \
+        /sg/local/sid/home/Dsidadm/DATA_LOADER/DATA/LOADING_ZONE/<SOURCE>/BATCH_<TS>_<ID>/
+     ```
+  3. If the file is unrecognized or extraneous, isolate it in quarantine:
+     ```bash
+     mkdir -p /sg/local/sid/home/Dsidadm/DATA_LOADER/DATA/QUARANTINE/<SOURCE>/
+     mv /sg/local/sid/home/Dsidadm/DATA_LOADER/DATA/LOADING_ZONE/<SOURCE>/<stray_file> \
+        /sg/local/sid/home/Dsidadm/DATA_LOADER/DATA/QUARANTINE/<SOURCE>/
+     ```
+  4. Re-run `orchestrator.py --source <SOURCE>` to resume in-flight batch recovery.
+
+---
+
 ## 3. Comprehensive Technical FAQ
 
 ### 3.1 Developer FAQ
