@@ -71,7 +71,7 @@ class TestTptWorkerUnlock(unittest.TestCase):
         self.assertFalse(success)
         self.assertEqual(entity, "ERP_MSH_USER")
         self.assertEqual(mock_run.call_count, 3)
-        mock_db.update_task_end.assert_called_with("9001", "ERP_MSH_USER", "FAILED", 0, error_msg=unittest.mock.ANY, source="ORACLE_FUSION")
+        mock_db.update_task_end.assert_called_with("9001", "ERP_MSH_USER", "FAILED", error_msg=unittest.mock.ANY, source="ORACLE_FUSION")
 
     @patch("lib.tpt_worker._run")
     def test_unlock_then_retry_success(self, mock_run):

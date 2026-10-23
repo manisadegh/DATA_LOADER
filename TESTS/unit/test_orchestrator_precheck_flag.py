@@ -84,7 +84,7 @@ class TestOrchestratorPrecheckFlag(unittest.TestCase):
         service = OrchestratorService(cfg_file)
         mock_db = MagicMock()
         mock_db.get_pending_tasks.return_value = [("ERP_MSH_USER", "file_userpvo-batch1-.csv", 0)]
-        service._db = mock_db
+        service.db = mock_db
 
         capsule_dir = os.path.join(self.landing, "BATCH_20261016_100000_101")
         ctx = BatchContext(
@@ -130,7 +130,7 @@ class TestOrchestratorPrecheckFlag(unittest.TestCase):
         mock_db.conn_mgr = MagicMock()
         mock_db.get_connection.return_value.__enter__.return_value = MagicMock()
         mock_db.get_pending_tasks.return_value = [("ERP_MSH_USER", "file_userpvo-batch1-.csv", 0)]
-        service._db = mock_db
+        service.db = mock_db
 
         capsule_dir = os.path.join(self.landing, "BATCH_20261016_100000_102")
         ctx = BatchContext(
