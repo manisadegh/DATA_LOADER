@@ -36,13 +36,16 @@ bash "${TESTS_DIR}/clean_data_and_logs.sh"
 
 # 2. Simulation d'un crash en plein vol dans LOADING_ZONE/ORACLE_FUSION
 echo "[STEP 1] Injection du lot crashé BATCH 9004 directement dans LOADING_ZONE/ORACLE_FUSION..."
-cp "${DATASETS_DIR}/BATCH_CRASH"/* "${DATA_DIR}/LOADING_ZONE/ORACLE_FUSION/"
+CRASH_CAPSULE_DIR="${DATA_DIR}/LOADING_ZONE/ORACLE_FUSION/BATCH_20261016_100300_9004"
+mkdir -p "${CRASH_CAPSULE_DIR}"
+cp -r "${DATASETS_DIR}/BATCH_CRASH"/* "${CRASH_CAPSULE_DIR}/"
 
 DEAD_PID="999999"
 echo "[STEP 2] Création d'un verrou orphelin avec PID mort (${DEAD_PID})..."
 echo "${DEAD_PID}" > "${DATA_DIR}/LOADING_ZONE/ORACLE_FUSION/.orchestrator.pid"
 
 ls -la "${DATA_DIR}/LOADING_ZONE/ORACLE_FUSION/"
+ls -la "${CRASH_CAPSULE_DIR}/"
 
 # 3. Lancement du Feeder : il doit constater le PID inactif et reprendre le lot en cours
 echo "[STEP 3] Lancement du Feeder pour reprise automatique du lot interrompu..."

@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0",
+  "batch_id": "9004",
+  "source": "ORACLE_FUSION",
+  "extract_timestamp_raw": "20261016_100300",
+  "extract_timestamp_iso": "2026-10-16T10:03:00",
+  "extract_timestamp": "2026-10-16T10:03:00",
+  "intake_timestamp_iso": "2026-10-16T10:03:00Z",
+  "created_at_utc": "2026-10-16T10:03:00Z",
+  "standardized_manifest": "MANIFEST_ORACLE_FUSION_20261016_100300_9004.MF",
+  "manifest_filename": "MANIFEST_ORACLE_FUSION_20261016_100300_9004.MF",
+  "manifest_checksum": "2d21276f0de7907435ad4aaebb69c664",
+  "raw_manifest": "",
+  "receipt_file": "",
+  "entities": {
+    "ERP_MSH_USER": {
+      "files": [
+        "file_userpvo-batch9004-.csv"
+      ],
+      "file_sizes": {
+        "file_userpvo-batch9004-.csv": 61
+      },
+      "checksums": {
+        "file_userpvo-batch9004-.csv": "34cd7ef08a150e57f42f0d87df21ebe5"
+      },
+      "header_columns": [
+        "USER_ID",
+        "USER_NAME",
+        "EMAIL_ADDRESS"
+      ],
+      "load_mode": "replace",
+      "delimiter": ",",
+      "skip_rows": 1
+    }
+  }
+}

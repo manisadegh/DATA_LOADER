@@ -204,3 +204,6 @@ Following the execution of the full scenario test suite where Unit Tests (103/10
      `self.logger.info("[BYPASS] Post-tasks execution skipped via --skip-post-tasks flag.")`
    - Perfectly matches the verification string expected by `02_test_skip_post_tasks.sh` (line 53) and `06_test_intake_controller_post_tasks.sh` (line 106).
    - Mirrored across both `DATA_LOADER/PROCESSING_TOOLS/DATA_INGESTION_ORCHESTRATOR/lib/orchestrator_service.py` and `DATA_INGESTION_ORCHESTRATOR/lib/orchestrator_service.py`.
+2. **Scenario 04 In-Flight Capsule Staging Parity (`04_test_crash_stale_pid.sh`, `BATCH_CRASH`)**:
+   - In `04_test_crash_stale_pid.sh`, updated Step 1 to inject the simulated in-flight crash batch into its self-contained Batch Capsule directory `LOADING_ZONE/ORACLE_FUSION/BATCH_20261016_100300_9004/`, adhering to Phase 2 Batch Capsule Architecture (F2.2, F2.7, F2.10) and passing the root stray-files sentry.
+   - Created `TESTS/DATASETS/BATCH_CRASH/batch_descriptor.json` with complete entity mapping (`ERP_MSH_USER`), file sizes, column metadata, and checksums for Batch 9004.
