@@ -196,22 +196,23 @@ Chaque sous-répertoire de scénario contient :
 
 ### 5.1 Synthèse d'Exécution & Métriques Officielles (100% PASS)
 
-Les 11 scénarios d'intégration système ont été validés avec un taux de réussite de **100%** sur l'environnement Teradata Vantage cible :
+L'ensemble de la suite de tests (Phase 1 : 76 tests unitaires in-memory, et Phase 2 : 11 scénarios d'intégration système) a été validé avec un taux de réussite de **100%** sur l'environnement Teradata Vantage cible (`tdadev`) :
 
-| N° | Script de Scénario | Statut | Code Retour | Durée d'Exécution | Validation Clé |
+| N° | Composant / Scénario | Statut | Code Retour | Durée | Validation Clé |
 |:---|:---|:---:|:---:|:---:|:---|
-| **01** | `01_test_nominal_pipeline.sh` | **PASS** | `RC=0` | 20.2s | Pipeline nominal de bout en bout, création Auto-DDL, FastLoad, coffre-fort `RAW/`. |
+| **Phase 1** | **Suite Tests Unitaires** (`TESTS/unit/` + `test_phase01_units.py`) | **PASS** | `RC=0` | 3.3s | 76 tests unitaires : Core SDK, gouvernance de schéma, génération TPT dynamique, -L file list, extraction Python des en-têtes. |
+| **09** | `09_test_unit_and_core_sdk.sh` | **PASS** | `RC=0` | 23.6s | Intégration complète Core SDK, respect des limites de lignes (<80), pool DB persistant. |
+| **08** | `08_test_lock_recovery_and_schema_flags.sh` | **PASS** | `RC=0` | 50.0s | Blocage de dérive sous `auto_migrate_ddl: false`, parité d'assainissement, reprise unlock avec métadonnées d'audit. |
+| **01** | `01_test_nominal_pipeline.sh` | **PASS** | `RC=0` | 19.3s | Pipeline nominal de bout en bout, création Auto-DDL, FastLoad, coffre-fort `RAW/`. |
 | **02** | `02_test_skip_post_tasks.sh` | **PASS** | `RC=0` | 19.4s | Découplage hybride via `--skip-post-tasks`, bypass strict des hooks aval. |
-| **03** | `03_test_concurrency_lock.sh` | **PASS** | `RC=0` | 40.1s | Attente active sur PID concurrent, évitement de collision et exécution ordonnée. |
-| **04** | `04_test_crash_stale_pid.sh` | **PASS** | `RC=0` | 16.6s | Détection de PID mort (`999999`), nettoyage de verrou et reprise en vol d'un lot interrompu. |
-| **05** | `05_test_multisource_partition.sh` | **PASS** | `RC=0` | 71.3s | Cloisonnement multi-sources strict (`ORACLE_FUSION` vs `CRM`) et exécutions isolées. |
-| **06** | `06_test_intake_controller_post_tasks.sh` | **PASS** | `RC=0` | 38.2s | Exécution combinée des post-tasks source et globales, et validation du bypass. |
-| **07** | `07_test_database_and_storage_audit.sh` | **PASS** | `RC=0` | 19.8s | Audit profond Teradata (`BATCH_RUNS`, `BATCH_TASKS`, `ERP_MSH_USER`) et intégrité stockage. |
-| **08** | `08_test_lock_recovery_and_schema_flags.sh` | **PASS** | `RC=0` | 38.7s | Blocage de dérive sous `auto_migrate_ddl: false`, parité d'assainissement, reprise unlock. |
-| **09** | `09_test_unit_and_core_sdk.sh` | **PASS** | `RC=0` | 22.1s | 35 tests unitaires du Core SDK (`TESTS/unit/`), respect des limites de lignes (<80), pool DB. |
-| **10** | `10_test_decoupled_multi_batch_queue.sh` | **PASS** | `RC=0` | 38.6s | Découplage `--enqueue-only`, publication Batch Capsule, consommation FIFO multi-lots. |
-| **11** | `11_test_multisource_plugin_and_slot_governor.sh` | **PASS** | `RC=0` | 38.2s | Plugins d'intake (`SourceIntakePlugin`), mapping 9 colonnes, régulation `UtilitySlotGovernor`. |
-| **TOTAL** | **Suite Complète (11/11)** | **100% PASS** | `RC=0` | **363.2s (~6 min)** | **Tous les critères d'acceptation validés avec succès sur Teradata Vantage.** |
+| **03** | `03_test_concurrency_lock.sh` | **PASS** | `RC=0` | 40.4s | Attente active sur PID concurrent, évitement de collision et exécution ordonnée. |
+| **04** | `04_test_crash_stale_pid.sh` | **PASS** | `RC=0` | 18.8s | Détection de PID mort (`999999`), nettoyage de verrou et reprise en vol d'un lot interrompu. |
+| **05** | `05_test_multisource_partition.sh` | **PASS** | `RC=0` | 59.2s | Cloisonnement multi-sources strict (`ORACLE_FUSION` vs `CRM`) et exécutions isolées. |
+| **06** | `06_test_intake_controller_post_tasks.sh` | **PASS** | `RC=0` | 38.4s | Exécution combinée des post-tasks source et globales, et validation du bypass. |
+| **07** | `07_test_database_and_storage_audit.sh` | **PASS** | `RC=0` | 33.9s | Audit profond Teradata (`BATCH_RUNS`, `BATCH_TASKS`, `ERP_MSH_USER`) et intégrité stockage. |
+| **10** | `10_test_decoupled_multi_batch_queue.sh` | **PASS** | `RC=0` | 42.7s | Découplage `--enqueue-only`, publication Batch Capsule, consommation FIFO multi-lots. |
+| **11** | `11_test_multisource_plugin_and_slot_governor.sh` | **PASS** | `RC=0` | 53.2s | Plugins d'intake (`SourceIntakePlugin`), mapping 9 colonnes, régulation `UtilitySlotGovernor`. |
+| **TOTAL** | **Suite Complète (76 Units + 11 Scénarios)** | **100% PASS** | `RC=0` | **~6.7 min** | **Tous les critères d'acceptation validés avec succès sur Teradata Vantage.** |
 
 ### 5.2 Détail des Scénarios et Assertions Vérifiées
 
@@ -292,24 +293,33 @@ python3 verify_database_and_storage.py \
 
 ## 7. Inventaire des Tests Unitaires (`DATA_LOADER/TESTS/unit/`)
 
-En complément des 11 scénarios d'intégration système, le dossier `TESTS/unit/` héberge une suite de 14 modules de tests unitaires automatisés validant les composants internes du SDK partagé `dataloader_core` et des services d'application :
+En complément des 11 scénarios d'intégration système, le dossier `TESTS/unit/` et la racine `TESTS/` hébergent une suite exhaustive de 23 modules de tests unitaires automatisés (76 tests au total) validant les composants internes du SDK partagé `dataloader_core`, les services d'application, et les sécurités de chargement TPT / Schema Guard :
 
 | Module de Test | Composant Validé | Fonctionnalités & Assertions Clés |
 |:---|:---|:---|
 | `test_batch_descriptor_capsule.py` | `capsule.py` (`BatchDescriptor`, `CapsulePathResolver`) | - Sérialisation et désérialisation JSON round-trip de `BatchDescriptor`.<br>- Publication atomique de capsules dans `LANDING_ZONE`.<br>- Exclusion des répertoires temporaires `.staging_*` lors des scans. |
 | `test_core_config.py` | `config.py` (`ConfigLoader`) | - Résolution récursive des variables d'environnement (`${VAR}`).<br>- Résolution sécurisée des chemins de sas (`resolve_zone_path`) avec protection contre les faux positifs de sous-chaînes.<br>- Chargement et validation des configurations JSON avec valeurs par défaut. |
-| `test_core_db_pool.py` | `db.py` (`TeradataConnectionManager`) | - Validation stricte des identifiants SQL contre les injections (`validate_sql_identifier`).<br>- Ordre de priorité des identifiants Teradata (Wallet $\rightarrow$ clés DBT $\rightarrow$ direct).<br>- Construction des variables d'environnement TPT.<br>- Réutilisation thread-safe des connexions au sein du pool persistant. |
+| `test_core_db_pool.py` | `db.py` (`TeradataConnectionManager`) | - Validation stricte des identifiants SQL contre les injections (`validate_sql_identifier`).<br>- Ordre de priorité des identifiants Teradata (Wallet $\rightarrow$ clés DBT $\rightarrow$ direct).<br>- Construction sécurisée des variables d'environnement TPT sans mutation de `$USER` (`TD_LOGON_USER`).<br>- Réutilisation thread-safe des connexions au sein du pool persistant. |
 | `test_core_locking.py` | `locking.py` (`ProcessLock`) | - Détection de l'existence et vivacité d'un PID système (`is_pid_alive`).<br>- Verrouillage POSIX exclusif non-bloquant (`fcntl.flock`).<br>- Détection et nettoyage automatique des verrous orphelins (PID mort / crash).<br>- Boucle d'attente active avec timeout pour les processus concurrents vivants. |
-| `test_core_manifest_and_capsule.py` | `manifest.py` / `capsule.py` | - Reconnaissance et parsing des 4 motifs syntaxiques de fichiers manifests BICC.<br>- Lecture et écriture d'entrées de manifest avec calcul d'empreinte MD5.<br>- Résolution des sous-dossiers temporels et capsules d'archivage. |
-| `test_core_mapping.py` | `mapping.py` (`EntityMapper`) | - Résolution des règles de routage pour fichiers simples (`.csv`, `.pecsv`, `.gz`).<br>- Inspection interne à double passe des archives d'entités `.zip`.<br>- Cloisonnement strict des règles par source et gestion des jokers (`*`). |
+| `test_core_manifest_and_capsule.py` | `manifest.py` / `capsule.py` | - Reconnaissance et parsing des motifs syntaxiques de manifests.<br>- Lecture et écriture d'entrées de manifest avec calcul d'empreinte MD5.<br>- Résolution des sous-dossiers temporels et capsules d'archivage. |
+| `test_core_mapping.py` | `mapping.py` (`EntityMapper`) | - Règles strictes F1.8 : validation stricte des énumérations (`LOAD_MODE`, `HEADER_MODE`), rejets de doublons.<br>- Signatures ancrées `(?:^|_)<sig>(?=-batch|\.)` évitant les collisions de sous-chaînes.<br>- Inspection interne à double passe des archives d'entités `.zip` avec détection des archives corrompues. |
 | `test_intake_plugin_framework.py` | `dataloader_core.intake` (`SourceIntakePlugin`, `PluginRegistry`) | - Enregistrement dynamique via `@PluginRegistry.register` et résolution de plugin par nom.<br>- Découverte et validation des candidats de lots (`BICCIntakePlugin`, `StandardManifestIntakePlugin`, `ManifestlessDropIntakePlugin`).<br>- Isolation 100% flat-file sans dépendance de base de données Teradata. |
 | `test_intake_service.py` | `intake_service.py` (`IntakeControllerService`) | - Invariant architectural : `feeder.py` strictement $< 80$ lignes.<br>- Cycle de vie du service d'intake hérité de `BaseIntakeController` sur sas vide et sur lot unitaire nominal. |
 | `test_jit_schema_guard_order.py` | `orchestrator_service.py` / `schema_guard.py` | - Vérification de l'ordre d'appel du Just-In-Time Schema Guard.<br>- Schema Guard invoqué pour chaque lot immédiatement avant le lancement TPT dans le respect de la file FIFO. |
 | `test_multi_batch_queue_sensor.py` | `sensor.py` (`scan_landing_queue`) | - Détection et inventaire de 1..N Batch Capsules dans `LANDING_ZONE`.<br>- Tri chronologique strict ascendant FIFO.<br>- Rétro-compatibilité avec les manifests plats historiques.<br>- Détection et blocage sur fichiers orphelins non déclarés (contrat OPS-02). |
+| `test_orchestrator_precheck_flag.py` | `orchestrator_service.py` / `schema_guard.py` | - Validation de la dérivation du flag `-C` (`SKIP_BTEQ_CHECK`) : passé uniquement lorsque Schema Guard s'est exécuté et a validé la concordance du schéma. |
 | `test_orchestrator_service.py` | `orchestrator_service.py` (`OrchestratorService`) | - Invariant architectural : `orchestrator.py` strictement $< 80$ lignes.<br>- Cycle de vie complet de l'orchestrateur (consommation de file, archivage).<br>- Exécution des post-tasks dans un environnement isolé (`context_env`) sans mutation de `os.environ`. |
 | `test_per_entity_mapping_options.py` | `mapping.py` (`EntityRule`, `EntityMapper`) | - Rétro-compatibilité 100% avec les tables de correspondance à 5 colonnes.<br>- Prise en charge des 9 colonnes (`DELIMITER`, `LOAD_MODE`, `SKIP_ROWS`, `HEADER_MODE`).<br>- Parsing des variantes d'en-tête (`first_chunk_only`, `every_file`, `none`) et séparateurs personnalisés. |
-| `test_phase01_units.py` | Utilitaires transverses | - Nettoyage et assainissement des noms de colonnes CSV (`clean_column_name`) avec parité exacte entre regex Python et filtres Bash.<br>- Validation des types SQL autorisés.<br>- Résolution de la table cible et gestion des PID stale. |
+| `test_schema_guard_evolution.py` | `schema_guard.py` | - Évolution non-destructive de schéma : exécution de `ALTER TABLE ... ADD` pour colonnes supplémentaires sans `DROP TABLE`.<br>- Blocage strict des réordonnancements et suppressions avec `SchemaDriftError`. |
+| `test_schema_guard_has_meta.py` | `schema_guard.py` | - Mesure dynamique de `has_meta` (0, 1 -> erreur, 2) depuis le catalogue Teradata.<br>- Protection contre les structures de tables avec une seule colonne d'audit. |
+| `test_schema_guard_row_size.py` | `schema_guard.py` | - Calcul théorique de la taille maximale des lignes (`declared_row_bytes`) pour UNICODE et LATIN.<br>- Rejet préventif (`SchemaDriftError`) si dépassement du plafond système (`max_row_bytes`). |
+| `test_tpt_file_list.py` | `TPT_LOADER/lib/` | - Support des listes explicites de fichiers via `-L <listfile>`.<br>- Rejet strict de la coexistence de `-f` et `-L` (mutuellement exclusifs).<br>- Obligation des chemins absolus et mandatory `-B`/`-T` si colonnes d'audit présentes. |
+| `test_tpt_header_parse.py` | `parse_header.py` / `bteq_check.sh` | - Extraction fiable des en-têtes CSV par Python avec prise en compte des délimiteurs cités entre guillemets et accents UTF-8.<br>- Parité 100% avec `schema_reader.py`. |
+| `test_tpt_job_generation.py` | `generate_tpt_job.sh` | - Synthèse dynamique de `job.tpt` avec typage strict (`PAYLOAD_SCHEMA`).<br>- Injection directe des littéraux d'audit (`INFA_BATCH_ID`, `INFA_LAST_REPLICATED`) dans la clause `APPLY $INSERT`.<br>- Configuration stricte `AcceptMissingColumns = 'N'`. |
+| `test_tpt_worker_process_group.py` | `tpt_worker.py` | - Isolation en groupe de processus POSIX (`os.setsid`).<br>- Escalade de signaux en cas de timeout (`SIGTERM` puis `SIGKILL`).<br>- Regex de détection précise de verrou Teradata (Erreur 2652). |
+| `test_tpt_worker_unlock.py` | `tpt_worker.py` / `unlock_tpt_table.sh` | - Génération d'identifiant de job unique TPT (`TPT_<TABLE>_<TS>`).<br>- Transmission de `-j <job_name>` à `unlock_tpt_table.sh`.<br>- Reprise propre après unlock sans marquer faussement l'entité en succès sur l'unlock seul. |
 | `test_utility_slot_governor.py` | `locking.py` (`UtilitySlotGovernor`) | - Régulation cross-processus des créneaux de chargement Teradata via slots bornés `fcntl.flock`.<br>- Respect strict du plafond de concurrence (max slots) avec mise en file ordonnée.<br>- Libération instantanée au niveau du noyau Linux en cas de crash/terminaison. |
+| `test_phase01_units.py` | Tests unitaires transverses Phase 1 | - Parité d'assainissement de colonnes.<br>- Scoping obligatoire de `SOURCE = ?` dans les requêtes techniques `BATCH_RUNS` / `BATCH_TASKS`.<br>- Validation des arguments et pré-unlock TPT. |
 
 ---
 
