@@ -1,0 +1,37 @@
+/* =========================================================================
+   Job Variables Template for load_csv_generic.sh / TPT
+   =========================================================================
+   This file can be passed to the loader via the -v argument:
+   ./load_csv_generic.sh -v jobvariables.txt
+
+   Values in this file act as defaults, overridden by explicit CLI flags.
+   Passwords should NOT be stored here; use Teradata Wallet or Key/Pass files.
+   ========================================================================= */
+
+/* Source Files */
+DirectoryPath      = ''
+FileName           = ''
+TextDelimiter      = ','
+SkipRows           = 1
+
+/* Connection & Databases */
+TargetDatabase     = '${TDENV}SIDFINSTG'
+UtilityDatabase    = '${TDENV}SIDFINWRK'
+UserName           = '${TDENV}${SID_ADM_USER}'
+
+/* Target and Ingestion Mode */
+TargetTable        = ''
+ConsumerOperator   = 'LOAD_OPERATOR'   /* 'LOAD_OPERATOR' (replace) or 'UPDATE_OPERATOR' (append) */
+
+/* Metadata Audit (optional, auto-extracted if empty) */
+BatchId            = ''
+Timestamp          = ''
+
+/* Tuning & Instances */
+ErrorLimit         = 1
+ReaderInstances    = 1
+LoadInstances      = 1
+MaxSessions        = 8
+
+/* Local Working Directories */
+WorkDirectory      = 'tmp/tpt_work'

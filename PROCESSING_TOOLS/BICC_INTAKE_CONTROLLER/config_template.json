@@ -1,0 +1,21 @@
+{
+  "feeder": {
+    "drop_zone": "../../DATA/DROP_ZONE",
+    "logs_dir": "../../LOGS",
+    "file_stability_window_seconds": 3,
+    "source_system_code": "ORACLE_FUSION",
+    "intake_plugin": "bicc",
+    "entity_mapping_file": "../../CONFIG/entity_mapping.csv",
+    "concurrency": {
+      "poll_interval_seconds": 5,
+      "lock_timeout_seconds": 7200
+    }
+  },
+  "orchestrator": {
+    "orchestrator_dir": "../DATA_INGESTION_ORCHESTRATOR",
+    "config_file": "config.json",
+    "landing_zone": "../../DATA/LANDING_ZONE",
+    "python_executable": "python3",
+    "trigger_orchestrator": true
+  }
+}

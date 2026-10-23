@@ -1,0 +1,11 @@
+# Temporary and runtime working directories
+tmp/
+.tpt_work/
+*.log
+*.out
+*.tmp
+rejected_rows.txt
+
+# OS metadata
+.DS_Store
+Thumbs.db

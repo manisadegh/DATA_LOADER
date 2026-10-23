@@ -1,0 +1,44 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.class
+.pytest_cache/
+
+# Runtime and staging data capsules (retain empty directory structure via .gitkeep)
+DATA/DROP_ZONE/*
+!DATA/DROP_ZONE/.gitkeep
+!DATA/DROP_ZONE/ARCHIVE/
+DATA/DROP_ZONE/ARCHIVE/*
+!DATA/DROP_ZONE/ARCHIVE/.gitkeep
+DATA/LANDING_ZONE/*
+!DATA/LANDING_ZONE/.gitkeep
+DATA/LOADING_ZONE/*
+!DATA/LOADING_ZONE/.gitkeep
+DATA/ARCHIVE_ZONE/*
+!DATA/ARCHIVE_ZONE/.gitkeep
+
+# Runtime logs
+LOGS/*
+!LOGS/.gitkeep
+
+# Test scenario execution outputs (retain baseline archive)
+TESTS/OUTPUTS/*
+!TESTS/OUTPUTS/.gitkeep
+!TESTS/OUTPUTS/all_test_outputs_latest.tar.gz
+
+# Runtime markers, locks, and temporary files
+*.log
+*.tmp
+*.pid
+.*.pid
+.*.header_stripped
+rejected_rows.txt
+.tpt_work/
+
+# OS and environment metadata
+.env
+.venv
+env/
+venv/
+.DS_Store
+Thumbs.db
