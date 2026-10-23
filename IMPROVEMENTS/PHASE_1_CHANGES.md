@@ -125,6 +125,7 @@
   - Added `alter_add_columns`: When CSV contains new columns appended to the end of existing columns, generates `ALTER TABLE <target> ADD <new_col> VARCHAR(4000) ...`.
   - Reordered columns, dropped columns, or type changes raise `SchemaDriftError` halting processing.
   - Updated config defaults: `"auto_migrate_ddl": false` across all shipped configuration files.
+  - Test Harness Alignment: Updated `TESTS/clean_data_and_logs.sh` to recreate fresh staging tables (`ERP_MSH_USER` and `CRM_MSH_CUSTOMER`) and ensure `TPT_JOB_NAME` exists on `BATCH_TASKS`. Because `auto_migrate_ddl: false` is now strictly enforced, Schema Guard properly halts on missing tables; test harness resets now provision clean staging tables upfront to mirror governed production environments.
 - **Test Coverage:** Added `TESTS/unit/test_schema_guard_evolution.py`.
 
 ---

@@ -73,6 +73,46 @@ try:
                         cur.execute(f"DROP TABLE {work_db}.{pfx}{tbl}")
                     except Exception:
                         pass
+            try:
+                cur.execute(f"""
+                    CREATE MULTISET TABLE {target_db}.ERP_MSH_USER ,NO FALLBACK ,
+                         NO BEFORE JOURNAL,
+                         NO AFTER JOURNAL,
+                         CHECKSUM = DEFAULT,
+                         DEFAULT MERGEBLOCKRATIO
+                         (
+                            USER_ID VARCHAR(4000) CHARACTER SET UNICODE NOT CASESPECIFIC,
+                            USER_NAME VARCHAR(4000) CHARACTER SET UNICODE NOT CASESPECIFIC,
+                            EMAIL_ADDRESS VARCHAR(4000) CHARACTER SET UNICODE NOT CASESPECIFIC,
+                            INFA_LAST_REPLICATED TIMESTAMP(0),
+                            INFA_BATCH_ID VARCHAR(100) CHARACTER SET UNICODE NOT CASESPECIFIC
+                         )
+                    NO PRIMARY INDEX
+                """)
+            except Exception as exc:
+                print(f"    [WARN] Recreating ERP_MSH_USER staging table warning: {exc}")
+            try:
+                cur.execute(f"""
+                    CREATE MULTISET TABLE {target_db}.CRM_MSH_CUSTOMER ,NO FALLBACK ,
+                         NO BEFORE JOURNAL,
+                         NO AFTER JOURNAL,
+                         CHECKSUM = DEFAULT,
+                         DEFAULT MERGEBLOCKRATIO
+                         (
+                            CUSTOMER_ID VARCHAR(4000) CHARACTER SET UNICODE NOT CASESPECIFIC,
+                            CUSTOMER_NAME VARCHAR(4000) CHARACTER SET UNICODE NOT CASESPECIFIC,
+                            REGION VARCHAR(4000) CHARACTER SET UNICODE NOT CASESPECIFIC,
+                            INFA_LAST_REPLICATED TIMESTAMP(0),
+                            INFA_BATCH_ID VARCHAR(100) CHARACTER SET UNICODE NOT CASESPECIFIC
+                         )
+                    NO PRIMARY INDEX
+                """)
+            except Exception as exc:
+                print(f"    [WARN] Recreating CRM_MSH_CUSTOMER staging table warning: {exc}")
+            try:
+                cur.execute(f"ALTER TABLE {tech_db}.BATCH_TASKS ADD TPT_JOB_NAME VARCHAR(128) CHARACTER SET UNICODE NOT CASESPECIFIC")
+            except Exception:
+                pass
     mgr.close_all()
 except Exception as exc:
     print(f"    [WARN] Non-blocking Teradata state purge warning: {exc}")
