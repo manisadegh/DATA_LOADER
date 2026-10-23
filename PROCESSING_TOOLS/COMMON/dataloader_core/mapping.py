@@ -11,9 +11,12 @@ from __future__ import annotations
 import csv
 import logging
 import os
+import re
 import zipfile
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+
+from .exceptions import BatchValidationError, ConfigurationError
 
 logger = logging.getLogger("dataloader_core.mapping")
 
@@ -59,13 +62,10 @@ class EntityRule:
 
 def inspect_file_inner_extension(file_path: str) -> str:
     """
-    Returns the effective inner extension of a file.
-    If the file is a .zip archive, inspects its members in memory:
-      - Returns '.pecsv' if any member ends in .pecsv (Active Keys)
-      - Returns '.csv' if any member ends in .csv (Data Payload)
-      - Falls back to the extension of the first member
-    If .gz compressed, strips .gz and returns '.csv' or '.pecsv'.
-    If uncompressed, returns the file's own extension (e.g. '.csv', '.pecsv').
+    Inspects archive files to determine the logical data format (.csv vs .pecsv).
+    For ZIP files, inspects internal file entries.
+    For GZ files, inspects the nested filename.
+    Raises BatchValidationError if a .zip file cannot be read/inspected.
     """
     lower_p = file_path.lower()
     if lower_p.endswith(".zip") and os.path.exists(file_path):
@@ -79,7 +79,8 @@ def inspect_file_inner_extension(file_path: str) -> str:
                 if names:
                     return os.path.splitext(names[0])[1]
         except Exception as exc:
-            logger.warning(f"Unable to inspect ZIP archive '{file_path}': {exc}")
+            logger.error(f"Unable to inspect ZIP archive '{file_path}': {exc}")
+            raise BatchValidationError(f"Corrupt or unreadable ZIP archive '{file_path}': {exc}") from exc
     if lower_p.endswith(".gz"):
         base = lower_p[:-3]
         inner_ext = os.path.splitext(base)[1]
@@ -89,13 +90,17 @@ def inspect_file_inner_extension(file_path: str) -> str:
     return os.path.splitext(file_path)[1].lower()
 
 
+def _signature_matches(filename_lower: str, signature: str) -> bool:
+    """Matches only when signature is a complete token: preceded by _ or start, followed by -batch or ."""
+    pattern = r"(?:^|_)" + re.escape(signature) + r"(?=-batch|\.)"
+    return re.search(pattern, filename_lower) is not None
+
+
 class EntityMapper:
     """
     Loads and caches `entity_mapping.csv` rules and resolves data filenames
     to target staging tables using a 2-pass matching algorithm.
     """
-
-    inspect_inner_extension = staticmethod(inspect_file_inner_extension)
 
     def __init__(
         self,
@@ -106,27 +111,6 @@ class EntityMapper:
         self.default_source = default_source
         self._cached_all_rules: Optional[List[EntityRule]] = None
         self._cached_file_path: Optional[str] = None
-        if mapping_file and os.path.exists(mapping_file):
-            self.load_rules(mapping_file)
-
-    @staticmethod
-    def _source_matches(rule_source: str, filter_source: Optional[str]) -> bool:
-        if not filter_source:
-            return True
-        clean_rule_src = (rule_source or "").strip()
-        if not clean_rule_src or clean_rule_src == "*":
-            return True
-        allowed = [s.strip().upper() for s in clean_rule_src.split(",") if s.strip()]
-        return filter_source.strip().upper() in allowed
-
-    @staticmethod
-    def _extension_matches(filename_lower: str, rule: EntityRule) -> bool:
-        raw_ext = (rule.raw_extension or "").strip().lower()
-        if not raw_ext or raw_ext == "*":
-            return True
-        return filename_lower.endswith(raw_ext) or any(
-            filename_lower.endswith(ext) for ext in rule.extensions if ext
-        )
 
     def load_rules(
         self,
@@ -134,8 +118,8 @@ class EntityMapper:
         source: Optional[str] = None,
     ) -> List[EntityRule]:
         """
-        Loads `EntityRule` definitions from `mapping_file` (caching the full rule set)
-        and optionally filters by `source`.
+        Parses `entity_mapping.csv` into a list of `EntityRule` instances.
+        Validates attribute values and rejects duplicates with ConfigurationError.
         """
         target_file = mapping_file or self.mapping_file
         if not target_file:
@@ -159,13 +143,19 @@ class EntityMapper:
                         delm = normalized.get("DELIMITER", ",") or ","
                         lmode = (normalized.get("LOAD_MODE", "replace") or "replace").lower()
                         if lmode not in ("replace", "append"):
-                            lmode = "replace"
+                            raise ConfigurationError(
+                                f"entity_mapping.csv row {reader.line_num}: LOAD_MODE '{lmode}' is invalid (replace|append)"
+                            )
 
                         skip_rows_raw = normalized.get("SKIP_ROWS", "1") or "1"
                         try:
-                            skip_rows_val = max(0, int(skip_rows_raw))
+                            skip_rows_val = int(skip_rows_raw)
+                            if skip_rows_val < 0:
+                                raise ValueError()
                         except ValueError:
-                            skip_rows_val = 1
+                            raise ConfigurationError(
+                                f"entity_mapping.csv row {reader.line_num}: SKIP_ROWS '{skip_rows_raw}' is invalid (non-negative integer)"
+                            )
 
                         hmode = (normalized.get("HEADER_MODE", "") or "").lower()
                         if not hmode:
@@ -175,7 +165,9 @@ class EntityMapper:
                             else:
                                 hmode = "first_chunk_only"
                         if hmode not in ("first_chunk_only", "every_file", "none"):
-                            hmode = "first_chunk_only"
+                            raise ConfigurationError(
+                                f"entity_mapping.csv row {reader.line_num}: HEADER_MODE '{hmode}' is invalid (first_chunk_only|every_file|none)"
+                            )
 
                         all_rules.append(
                             EntityRule(
@@ -191,6 +183,18 @@ class EntityMapper:
                                 header_mode=hmode,
                             )
                         )
+
+            # Check for duplicate rules: (SOURCE, FILE_SIGNATURE, INNER_EXTENSION)
+            seen_keys = set()
+            for r in all_rules:
+                key = (r.source.upper(), r.signature.lower(), r.inner_extension.lower())
+                if key in seen_keys:
+                    raise ConfigurationError(
+                        f"Duplicate mapping rule detected in entity_mapping.csv: "
+                        f"SOURCE='{r.source}', FILE_SIGNATURE='{r.signature}', INNER_EXTENSION='{r.inner_extension}'"
+                    )
+                seen_keys.add(key)
+
             self._cached_all_rules = all_rules
             self._cached_file_path = abs_file
 
@@ -205,12 +209,12 @@ class EntityMapper:
         filename: str,
         file_dir: Optional[str] = None,
         source: Optional[str] = None,
-        rules: Optional[List[ Any ]] = None,
+        rules: Optional[List[Any]] = None,
     ) -> Optional[EntityRule]:
         """
         Executes 2-pass matching for `filename`:
-          - Pass 1: Matches source + signature + outer extension + inner_extension (.csv vs .pecsv)
-          - Pass 2: Fallback match on source + signature + outer extension (ignoring inner_extension)
+          - Pass 1: Matches source + anchored signature + outer extension + inner_extension (.csv vs .pecsv)
+          - Pass 2: Fallback match on source + anchored signature + outer extension (ignoring inner_extension)
         Returns the matched `EntityRule` or `None`.
         """
         fn_lower = filename.lower()
@@ -246,7 +250,7 @@ class EntityMapper:
         for rule in candidate_rules:
             if not self._source_matches(rule.source, filter_src):
                 continue
-            if rule.signature in fn_lower and self._extension_matches(fn_lower, rule):
+            if _signature_matches(fn_lower, rule.signature) and self._extension_matches(fn_lower, rule):
                 if rule.inner_extension and rule.inner_extension == actual_inner_ext:
                     return rule
 
@@ -254,7 +258,7 @@ class EntityMapper:
         for rule in candidate_rules:
             if not self._source_matches(rule.source, filter_src):
                 continue
-            if rule.signature in fn_lower and self._extension_matches(fn_lower, rule):
+            if _signature_matches(fn_lower, rule.signature) and self._extension_matches(fn_lower, rule):
                 return EntityRule(
                     source=rule.source,
                     target_table=rule.target_table,
@@ -269,3 +273,16 @@ class EntityMapper:
                 )
 
         return None
+
+    @staticmethod
+    def _source_matches(rule_source: str, requested_source: str) -> bool:
+        if not rule_source or rule_source.strip() in ("", "*"):
+            return True
+        return rule_source.strip().upper() == requested_source.strip().upper()
+
+    @staticmethod
+    def _extension_matches(filename_lower: str, rule: EntityRule) -> bool:
+        for ext in rule.extensions:
+            if filename_lower.endswith(ext.lower()):
+                return True
+        return False

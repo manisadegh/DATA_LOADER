@@ -151,13 +151,19 @@ ORACLE_FUSION,ERP_AP_INVOICES,invoiceheaderextractpvo,".csv,.zip",.csv,",",repla
 |:---|:---|:---|:---|
 | `SOURCE` | `str` | *(Requis)* | Name of the source partition (e.g. `CRM_SFDC`, `ORACLE_FUSION`). |
 | `TARGET_TABLE` | `str` | *(Requis)* | Target Teradata staging table name (without database prefix). |
-| `FILE_SIGNATURE` | `str` | *(Requis)* | Substring pattern in filename identifying the entity. |
-| `EXTENSION` | `str` | `".csv,.zip"` | Supported file extensions. |
+| `FILE_SIGNATURE` | `str` | *(Requis)* | Anchored identifier pattern identifying the entity in incoming filenames. Must be lowercase. |
+| `EXTENSION` | `str` | `".csv,.zip"` | Supported outer file extensions (comma-separated). |
 | `INNER_EXTENSION` | `str` | `""` | Optional extension of payload inside `.zip` archives (`.csv` vs `.pecsv`). |
 | `DELIMITER` | `str` | `","` | Character separator (e.g., `,`, `;`, `\t`, `\|`). Passed to TPT via `-s`. |
-| `LOAD_MODE` | `str` | `"replace"` | Ingestion engine: `replace` (FastLoad `DELETE ALL`) or `append` (MultiLoad). |
-| `SKIP_ROWS` | `int` | `1` | Header rows to skip in data files. |
-| `HEADER_MODE` | `str` | `"first_chunk_only"` | Header treatment: <br>• `first_chunk_only`: Oracle BICC Solution A (header stripped on chunk 1, TPT `-S 0 -Y N`).<br>• `every_file`: Standard CSVs where every file retains header (TPT `-S <SKIP_ROWS> -Y Y`).<br>• `none`: Headless data files (TPT `-S 0 -Y N`). |
+| `LOAD_MODE` | `str` | `"replace"` | Ingestion engine: `replace` (FastLoad `DELETE ALL`) or `append` (MultiLoad). Must be exact; invalid values raise `ConfigurationError`. |
+| `SKIP_ROWS` | `int` | `1` | Header rows to skip in data files ($\ge 0$). Invalid integers raise `ConfigurationError`. |
+| `HEADER_MODE` | `str` | `"every_file"` | Header treatment:<br>• `every_file`: Every data file/chunk retains header line. Loaded with `-S <SKIP_ROWS> -Y Y`.<br>• `first_chunk_only`: Oracle BICC Solution A where chunk 1 header is stripped on ingestion. Loaded with `-S 0 -Y N`.<br>• `none`: Completely headless data files. Loaded with `-S 0 -Y N`. |
+
+### Strict Mapping Validation Rules (F1.8)
+- **Anchored Signature Matching**: `mapping.py` enforces regex anchoring: `(?:^|_)<sig>(?=-batch|\.)`. The signature must match as a standalone token bounded by `^` or `_` and immediately followed by `-batch` or an extension dot `.`. A rule for `userpvo` will match `file_userpvo-batch1001-.csv` or `userpvo.csv`, but will **never** match `file_userpvocustom-batch1001-.csv`.
+- **Zero Fallback Coercion**: `LOAD_MODE`, `HEADER_MODE`, and `SKIP_ROWS` are strictly checked. Any unrecognized string (such as `"upsert"` or `"all"`) raises `ConfigurationError` immediately at startup rather than silently defaulting.
+- **Duplicate Rule Rejection**: Duplicate rules defining the same `(SOURCE, TARGET_TABLE)` or `(SOURCE, FILE_SIGNATURE)` raise `ConfigurationError`.
+- **Corrupt Archive Safety**: Corrupt or unreadable `.zip` archives encountered during signature inspection raise `BatchValidationError` rather than silently skipping files.
 
 ---
 

@@ -129,6 +129,14 @@ class TestCoreDBPool(unittest.TestCase):
 
             db.close()
 
+    def test_build_tpt_environment_does_not_touch_USER(self):
+        from dataloader_core.db import build_tpt_environment
+
+        fake_env = {"USER": "orig_user", "TDPID": "orig_host"}
+        tpt_env = build_tpt_environment({"user": "DEV0X"}, base_env=fake_env)
+        self.assertEqual(tpt_env.get("USER"), "orig_user")
+        self.assertEqual(tpt_env.get("TD_LOGON_USER"), "DEV0X")
+
 
 if __name__ == "__main__":
     unittest.main()

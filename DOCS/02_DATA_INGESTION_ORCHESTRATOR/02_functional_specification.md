@@ -24,7 +24,7 @@ flowchart TD
         Decomp["ZIP / GZ Decompression"]
         HeaderNorm["Chunk 1 Header Stripping (SkipRows=0)"]
         JITGuard["JIT Schema Guard: DBC.ColumnsV vs CSV"]
-        AutoDDL["Auto-DDL Recreate: NOPI VARCHAR(4000)"]
+        AutoDDL["Auto-DDL: Create Staging / Non-Destructive ALTER ADD"]
     end
 
     subgraph PARALLEL_LOAD["3. Parallel Loading & Fast-Path TPT"]
@@ -214,8 +214,17 @@ If an orchestrator execution terminates abruptly after files have moved into `LO
 - Upon full completion, the in-flight batch is moved to `ARCHIVE_ZONE`, freeing `LOADING_ZONE` to resume the queued batches.
 
 ### 4.5 Invariant OPS-05: JIT Schema Guard & Non-Destructive Protection
-- Auto-DDL is exclusively permitted in `replace` mode when `auto_migrate_ddl = true`.
-- In `append` mode, schema drift raises `SchemaSyncError` to prevent silent structural truncation or loss of historical data.
+- **Table Introspection & `has_meta` Measurement**: `get_teradata_table_columns` inspects `DBC.ColumnsV`, returning `(payload_columns, has_meta)`. If a table has only 1 audit column (e.g., `INFA_BATCH_ID` without `INFA_LAST_REPLICATED`), it raises `SchemaSyncError` immediately.
+- **Non-Destructive Evolution**: `schema_guard.py` never executes `DROP TABLE`. 
+  - If the table does not exist: creates a NOPI staging table with payload columns typed as `VARCHAR(4000) CHARACTER SET <UNICODE|LATIN> NOT CASESPECIFIC` plus audit columns `INFA_BATCH_ID` and `INFA_LAST_REPLICATED` (if `auto_migrate_ddl = true`).
+  - If the table exists: compares CSV columns with existing columns. When new columns are appended at the end of the CSV, issues non-destructive `ALTER TABLE <table> ADD <col> VARCHAR(4000) ...` (if `auto_migrate_ddl = true`).
+  - All other structural drifts (columns reordered, dropped, or modified in the middle, or any drift when `load_mode == 'append'` or `auto_migrate_ddl = false`) raise `SchemaDriftError`, halting the batch to preserve data integrity.
+- **Declared Row-Size Guard**: Calculates total declared row size (`declared_row_bytes`) before creating tables or adding columns:
+  - UNICODE: $4000 \times 2 = 8000$ bytes per column.
+  - LATIN: $4000 \times 1 = 4000$ bytes per column.
+  - Audit columns: $200 + 8 = 208$ bytes.
+  - Enforces `declared_row_bytes <= max_row_bytes` (configured by `"max_row_bytes": 64000`, safe under Teradata's 64 KB block / table limit).
+  - Wide PVOs with more than 7–8 UNICODE columns cannot use default `VARCHAR(4000)` auto-DDL and must have explicit, hand-written staging DDL deployed in Teradata with realistic column widths.
 
 ---
 
@@ -245,7 +254,7 @@ PRIMARY INDEX ( BATCH_ID ,SOURCE );
 > `PROCESS_PID` is permanently retained upon batch completion (`SUCCESS` or `FAILED`) for historical auditing and troubleshooting.
 
 ### `BATCH_TASKS` Table
-Tracks individual entity file loads and retry attempts:
+Tracks individual entity file loads, exact TPT job names, and retry attempts:
 ```sql
 CREATE MULTISET TABLE DEV0SIDFINTCH.BATCH_TASKS ,NO FALLBACK ,
      NO BEFORE JOURNAL,
@@ -262,7 +271,8 @@ CREATE MULTISET TABLE DEV0SIDFINTCH.BATCH_TASKS ,NO FALLBACK ,
         START_TIME TIMESTAMP(0),
         END_TIME TIMESTAMP(0),
         RETRY_COUNT INTEGER DEFAULT 0 ,
-        ERROR_MESSAGE VARCHAR(1000) CHARACTER SET UNICODE NOT CASESPECIFIC
+        ERROR_MESSAGE VARCHAR(1000) CHARACTER SET UNICODE NOT CASESPECIFIC,
+        TPT_JOB_NAME VARCHAR(128) CHARACTER SET UNICODE NOT CASESPECIFIC
      )
 PRIMARY INDEX ( BATCH_ID ,SOURCE );
 ```

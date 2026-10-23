@@ -201,6 +201,7 @@ class TeradataStateDB:
         entity_name: str,
         file_name: Optional[str] = None,
         source: Optional[str] = None,
+        tpt_job_name: Optional[str] = None,
     ) -> None:
         """Updates task status to RUNNING. If file_name is None, updates all files for this entity."""
         src = _require_source(source)
@@ -210,19 +211,19 @@ class TeradataStateDB:
                 cur.execute(
                     f"""
                     UPDATE {self.tech_db}.BATCH_TASKS 
-                    SET STATUS = 'RUNNING', START_TIME = ?, RETRY_COUNT = RETRY_COUNT + 1 
+                    SET STATUS = 'RUNNING', START_TIME = ?, RETRY_COUNT = RETRY_COUNT + 1, TPT_JOB_NAME = ?
                     WHERE BATCH_ID = ? AND SOURCE = ? AND ENTITY_NAME = ? AND FILE_NAME = ?
                 """,
-                    (ts_now, batch_id, src, entity_name, file_name),
+                    (ts_now, tpt_job_name, batch_id, src, entity_name, file_name),
                 )
             else:
                 cur.execute(
                     f"""
                     UPDATE {self.tech_db}.BATCH_TASKS 
-                    SET STATUS = 'RUNNING', START_TIME = ?, RETRY_COUNT = RETRY_COUNT + 1 
+                    SET STATUS = 'RUNNING', START_TIME = ?, RETRY_COUNT = RETRY_COUNT + 1, TPT_JOB_NAME = ?
                     WHERE BATCH_ID = ? AND SOURCE = ? AND ENTITY_NAME = ?
                 """,
-                    (ts_now, batch_id, src, entity_name),
+                    (ts_now, tpt_job_name, batch_id, src, entity_name),
                 )
 
     def update_task_end(

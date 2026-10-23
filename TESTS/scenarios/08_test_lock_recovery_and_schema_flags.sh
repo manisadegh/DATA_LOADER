@@ -5,7 +5,7 @@
 #   - Part A: Phase 01 Unit Test Suite (test_phase01_units.py) & CSV Column
 #             Sanitization Parity (BATCH_SPECIAL_COLS with spaces/hyphens/slashes)
 #   - Part B: Schema Guard auto_migrate_ddl=false & append-mode drift protection
-#   - Part C: unlock_tpt_table.sh replace-mode recovery + audit metadata backfill
+#   - Part C: unlock_tpt_table.sh replace-mode recovery via exact job name
 #             verified end-to-end via verify_database_and_storage.py
 # ==============================================================================
 set -e
@@ -108,13 +108,20 @@ if [ ${DRIFT_RC} -eq 0 ]; then
 fi
 echo "  [OK] Feeder correctly blocked destructive DDL when auto_migrate_ddl=false (RC=${DRIFT_RC})."
 
-# 5. Part C: Verify unlock_tpt_table.sh in replace mode backfills INFA_BATCH_ID and INFA_LAST_REPLICATED
-echo "[STEP 5] Testing unlock_tpt_table.sh replace-mode recovery and metadata backfill..."
+# 5. Part C: Verify unlock_tpt_table.sh in replace mode resumes FastLoad
+echo "[STEP 5] Testing unlock_tpt_table.sh replace-mode recovery..."
 TPT_CAPSULE_DIR=$(find "${LOGS_DIR}/ORACLE_FUSION" -type d -path "*BATCH_9009*/TPT" 2>/dev/null | head -1)
 if [ -z "${TPT_CAPSULE_DIR}" ]; then
     echo ">>> [FAILURE] Could not locate TPT work directory for Batch 9009 in ${LOGS_DIR}/ORACLE_FUSION"
     exit 1
 fi
+
+TPT_JOB_DIR=$(find "${TPT_CAPSULE_DIR}" -mindepth 1 -maxdepth 1 -type d -name "TPT_ERP_MSH_USER_*" 2>/dev/null | head -1)
+if [ -z "${TPT_JOB_DIR}" ]; then
+    echo ">>> [FAILURE] Could not locate TPT job directory for ERP_MSH_USER in ${TPT_CAPSULE_DIR}"
+    exit 1
+fi
+TPT_JOB_NAME=$(basename "${TPT_JOB_DIR}")
 
 # Stage payload file back into LOADING_ZONE/ORACLE_FUSION to simulate interrupted FastLoad recovery
 cp "${DATASETS_DIR}/BATCH_SPECIAL_COLS/file_userpvo-batch9009-.csv" "${DATA_DIR}/LOADING_ZONE/ORACLE_FUSION/"
@@ -122,8 +129,7 @@ cp "${DATASETS_DIR}/BATCH_SPECIAL_COLS/file_userpvo-batch9009-.csv" "${DATA_DIR}
 bash "${UNLOCK_SCRIPT}" \
     -t ERP_MSH_USER \
     -m replace \
-    -B 9009 \
-    -T 20261016_100800 \
+    -j "${TPT_JOB_NAME}" \
     -w "${TPT_CAPSULE_DIR}"
 UNLOCK_RC=$?
 
@@ -134,7 +140,7 @@ if [ ${UNLOCK_RC} -ne 0 ]; then
     echo ">>> [FAILURE] unlock_tpt_table.sh failed with RC=${UNLOCK_RC}"
     exit ${UNLOCK_RC}
 fi
-echo "  [OK] unlock_tpt_table.sh completed replace-mode resume and metadata backfill."
+echo "  [OK] unlock_tpt_table.sh completed replace-mode resume."
 
 # 6. Deep Teradata & Storage Verification Audit for Batch 9009
 echo "[STEP 6] Running Deep Teradata & Storage Auditor for Batch 9009..."

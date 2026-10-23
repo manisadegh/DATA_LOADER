@@ -1,14 +1,22 @@
 #!/bin/bash
 # ---------------------------------------------------------------------------
-# Check the target table exists, has matching columns, and matching column order
-# (accounting for optional INFA_BATCH_ID / INFA_LAST_REPLICATED metadata cols)
+# Check the target table exists, retrieve columns metadata into columns.txt,
+# and validate field counts and positional alignment
 # ---------------------------------------------------------------------------
 
-if [ "${SKIP_BTEQ_CHECK}" = "Y" ]; then
-    HAS_META="${CLI_HAS_META:-2}"
-    log INFO "Skipping BTEQ DBC.ColumnsV pre-check (-C specified; schema pre-validated by Orchestrator, HAS_META=${HAS_META})."
+# Setup run timestamp, job name and private run directory (F1.1 & F1.4)
+RUN_TS="$(date '+%Y%m%d_%H%M%S')"
+if [ -n "${CLI_JOB_NAME}" ]; then
+    [[ "${CLI_JOB_NAME}" =~ ^[A-Za-z0-9_]{1,120}$ ]] || die 1 "-j job name may contain only letters, digits and underscore"
+    JOB_NAME="${CLI_JOB_NAME}"
 else
-    BTEQ_OUT=$(${BTEQ_CMD} <<EOF 2>&1
+    JOB_NAME="TPT_${TARGET_TABLE}_${RUN_TS}"
+fi
+RUN_DIR="${WORK_DIR}/${JOB_NAME}"
+mkdir -p "${RUN_DIR}" && chmod 700 "${RUN_DIR}" || die 1 "Cannot create work dir ${RUN_DIR}"
+
+# Unconditional BTEQ query for table existence, audit columns, and column definitions
+BTEQ_OUT=$(${BTEQ_CMD} <<EOF 2>&1
 .set WIDTH 256
 .set TITLEDASHES OFF
 .logon ${TDPID}/${TD_USER},${BTEQ_PWD}
@@ -20,7 +28,9 @@ SELECT 'HAS_META=' || TRIM(COUNT(*)) (TITLE '')
 FROM DBC.ColumnsV
 WHERE DatabaseName = '${TARGET_DB}' AND TableName = '${TARGET_TABLE}'
   AND ColumnName IN ('INFA_BATCH_ID', 'INFA_LAST_REPLICATED');
-SELECT 'COLNAME=' || TRIM(ColumnName) (TITLE '')
+SELECT 'COLDEF=' || TRIM(ColumnName) || '|' || TRIM(ColumnType) || '|'
+       || TRIM(COALESCE(ColumnLength, 0)) || '|' || TRIM(COALESCE(CharType, 0)) || '|'
+       || TRIM(COALESCE(DecimalTotalDigits, 0)) || '|' || TRIM(COALESCE(DecimalFractionalDigits, 0)) (TITLE '')
 FROM DBC.ColumnsV
 WHERE DatabaseName = '${TARGET_DB}' AND TableName = '${TARGET_TABLE}'
   AND ColumnName NOT IN ('INFA_BATCH_ID', 'INFA_LAST_REPLICATED')
@@ -34,58 +44,63 @@ ORDER BY ColumnId;
 .exit 2
 EOF
 )
-    BTEQ_RC=$?
-    if [ ${BTEQ_RC} -ne 0 ]; then
-        echo "${BTEQ_OUT}"
-        die 2 "BTEQ pre-check failed (rc=${BTEQ_RC}) - connection or metadata query error"
-    fi
-    TABLE_COLS=$(echo "${BTEQ_OUT}" | grep -o 'NBCOL=[0-9][0-9]*' | head -1 | cut -d= -f2)
-    HAS_META=$(echo "${BTEQ_OUT}" | grep -o 'HAS_META=[0-9][0-9]*' | head -1 | cut -d= -f2)
-    [ -z "${HAS_META}" ] && HAS_META=0
+BTEQ_RC=$?
+if [ ${BTEQ_RC} -ne 0 ]; then
+    echo "${BTEQ_OUT}"
+    die 2 "BTEQ pre-check failed (rc=${BTEQ_RC}) - connection or metadata query error"
+fi
 
-    [ -z "${TABLE_COLS}" ] || [ "${TABLE_COLS}" -eq 0 ] \
-        && die 2 "Target table ${FQ_TABLE} does not exist"
+TABLE_COLS=$(echo "${BTEQ_OUT}" | grep -o 'NBCOL=[0-9][0-9]*' | head -1 | cut -d= -f2)
+HAS_META=$(echo "${BTEQ_OUT}" | grep -o 'HAS_META=[0-9][0-9]*' | head -1 | cut -d= -f2)
+[ -z "${HAS_META}" ] && HAS_META=0
 
-    if [ "${HAS_META}" -eq 2 ]; then
-        EXPECTED_COLS=$((HEADER_COLS + 2))
-        [ "${TABLE_COLS}" -ne "${EXPECTED_COLS}" ] \
-            && die 1 "Column count mismatch: file has ${HEADER_COLS} cols (+ 2 metadata expected = ${EXPECTED_COLS}), but ${FQ_TABLE} has ${TABLE_COLS}"
-        log INFO "Target table found with ${TABLE_COLS} columns (including 2 metadata columns) - OK"
-    else
-        [ "${TABLE_COLS}" -ne "${HEADER_COLS}" ] \
-            && die 1 "Column count mismatch: file has ${HEADER_COLS} columns, ${FQ_TABLE} has ${TABLE_COLS}"
-        log INFO "Target table found with ${TABLE_COLS} columns - OK"
-    fi
+[ -z "${TABLE_COLS}" ] || [ "${TABLE_COLS}" -eq 0 ] \
+    && die 2 "Target table ${FQ_TABLE} does not exist"
 
-    # DAT-01 Fix: Positional and Named Column Alignment Check
-    DB_COLS=()
-    for c in $(echo "${BTEQ_OUT}" | grep '^COLNAME=' | cut -d= -f2- | tr '[:lower:]' '[:upper:]' | tr -d '\r'); do
-        [ -n "$c" ] && DB_COLS+=( "$c" )
-    done
+if [ "${HAS_META}" -eq 1 ]; then
+    die 1 "${FQ_TABLE} has exactly one of INFA_BATCH_ID / INFA_LAST_REPLICATED; it must have both or neither"
+fi
 
-    if [ "${SKIP_ROWS}" -gt 0 ]; then
-        HEADER_LINE=$(head -1 "${FILES[0]}" | tr -d '\r')
-        IFS="${DELIMITER}" read -r -a CSV_COLS_RAW <<< "${HEADER_LINE}"
-        CSV_COLS=()
-        for col in "${CSV_COLS_RAW[@]}"; do
-            cleaned_col=$(clean_column_name "${col}")
-            [ -n "${cleaned_col}" ] && CSV_COLS+=( "${cleaned_col}" )
-        done
+echo "${BTEQ_OUT}" | grep '^COLDEF=' | sed 's/^COLDEF=//' | tr -d '\r' > "${RUN_DIR}/columns.txt"
+PAYLOAD_COL_COUNT=$(wc -l < "${RUN_DIR}/columns.txt" | tr -d ' ')
 
-        if [ ${#CSV_COLS[@]} -ne ${#DB_COLS[@]} ]; then
-            die 1 "Column count mismatch: CSV has ${#CSV_COLS[@]} columns, target table expects ${#DB_COLS[@]}"
+# Header field extraction
+if [ "${SKIP_ROWS}" -gt 0 ]; then
+    mapfile -t CSV_COLS < <(python3 "${LIB_DIR}/parse_header.py" "${FILES[0]}" "${DELIMITER}")
+    HEADER_COLS=${#CSV_COLS[@]}
+else
+    HEADER_COLS=$(head -1 "${FILES[0]}" | tr -d '\r' | awk -F"${DELIMITER}" '{print NF}')
+fi
+
+# Field-count pre-check runs unconditionally, even with -C (F1.1 step 6 & F1.5)
+if [ "${PAYLOAD_COL_COUNT}" -ne "${HEADER_COLS}" ]; then
+    die 1 "Column count mismatch: file has ${HEADER_COLS} fields, ${FQ_TABLE} has ${PAYLOAD_COL_COUNT} payload columns"
+fi
+
+# Named column alignment check (skipped when -C is given)
+if [ "${SKIP_BTEQ_CHECK}" = "Y" ]; then
+    log INFO "Skipping header column name validation (-C specified; schema pre-validated by Orchestrator, HAS_META=${HAS_META})"
+elif [ "${SKIP_ROWS}" -gt 0 ]; then
+    mapfile -t DB_COLS < <(cut -d'|' -f1 "${RUN_DIR}/columns.txt" | tr '[:lower:]' '[:upper:]')
+    for ((i=0; i<${#CSV_COLS[@]}; i++)); do
+        csv_col="${CSV_COLS[$i]}"
+        db_col="${DB_COLS[$i]}"
+        if [ "${csv_col}" != "${db_col}" ]; then
+            die 1 "Column order/name mismatch at position $((i+1)): CSV has '${csv_col}', but ${FQ_TABLE} expects '${db_col}'"
         fi
+    done
+    log INFO "Column names and physical order validated successfully (${#CSV_COLS[@]} columns match) - OK"
+else
+    log INFO "SkipRows is 0 (headless CSV / normalized chunks) - skipping header column name validation"
+fi
 
-        for ((i=0; i<${#CSV_COLS[@]}; i++)); do
-            csv_col="${CSV_COLS[$i]}"
-            db_col="${DB_COLS[$i]}"
-            if [ "${csv_col}" != "${db_col}" ]; then
-                die 1 "Column order/name mismatch at position $((i+1)): CSV has '${csv_col}', but ${FQ_TABLE} expects '${db_col}'"
-            fi
-        done
-        log INFO "Column names and physical order validated successfully (${#CSV_COLS[@]} columns match) - OK"
-    else
-        log INFO "SkipRows is 0 (headless CSV / normalized chunks) - skipping header column name validation"
+# Validate batch metadata presence (F1.11)
+if [ "${HAS_META}" -eq 2 ]; then
+    [ -n "${BATCH_ID}" ] || die 1 "${FQ_TABLE} has audit columns: -B <batch_id> (or -b pattern) is mandatory"
+    [ -n "${META_TS}"  ] || die 1 "${FQ_TABLE} has audit columns: -T <timestamp> (or -c pattern) is mandatory"
+else
+    if [ -n "${BATCH_ID}" ] || [ -n "${META_TS}" ]; then
+        log INFO "Target table ${FQ_TABLE} has no audit columns (HAS_META=0); ignoring batch metadata."
     fi
 fi
 

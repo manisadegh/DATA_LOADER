@@ -29,7 +29,3 @@ escape_sql_literal() {
     local val="$1"
     echo "${val//\'/\'\'}"
 }
-
-clean_column_name() {
-    echo "$1" | sed -E "s/^[[:space:]\"']+//; s/[[:space:]\"']+$//; s/[^A-Za-z0-9_]/_/g; s/_+/_/g; s/^_+//; s/_+$//" | tr '[:lower:]' '[:upper:]'
-}

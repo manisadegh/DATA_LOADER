@@ -352,8 +352,9 @@ class OrchestratorService:
             self.auto_migrate_ddl = env_auto_migrate.strip().lower() in ("1", "true", "yes")
             self.schema_guard_enabled = True
         else:
-            self.auto_migrate_ddl = bool(self.schema_guard_cfg.get("auto_migrate_ddl", True))
+            self.auto_migrate_ddl = bool(self.schema_guard_cfg.get("auto_migrate_ddl", False))
 
+        self.max_row_bytes = int(self.schema_guard_cfg.get("max_row_bytes", 64000))
         self.default_column_type = self.schema_guard_cfg.get("default_column_type", "VARCHAR(4000)")
         self.character_set = self.schema_guard_cfg.get("character_set", "UNICODE")
         self.target_database = self.schema_guard_cfg.get(
@@ -660,18 +661,18 @@ class OrchestratorService:
         entity: str,
         entity_info: Dict[str, Any],
         source: str,
-    ) -> Tuple[bool, int]:
+    ) -> Tuple[bool, Optional[int], bool]:
         """
         Executes Just-In-Time Schema Guard synchronization for a single entity
-        before TPT load begins. Returns (success, has_meta).
+        before TPT load begins. Returns (success, has_meta, guard_ran).
         """
         if not self.schema_guard_enabled:
-            return True, 2
+            return True, None, False
 
         db = self._get_db()
         # Check if database has active connection manager
         if not hasattr(db, "conn_mgr") or db.conn_mgr is None:
-            return True, 2
+            return True, None, False
 
         csv_cols = entity_info.get("header_columns")
         sample_file = entity_info.get("sample_file")
@@ -693,24 +694,21 @@ class OrchestratorService:
                     auto_migrate_ddl=self.auto_migrate_ddl,
                     load_mode=entity_load_mode,
                     csv_cols=csv_cols,
+                    max_row_bytes=self.max_row_bytes,
                 )
-                if len(res) >= 4:
-                    is_identical, action, cols, has_meta = res[:4]
-                else:
-                    is_identical, action, cols = res[:3]
-                    has_meta = 2
+                is_identical, action, cols, has_meta = res
 
                 self.schema_actions[entity] = action
                 if not is_identical and action == "BLOCKED":
                     self.logger.error(f"[{entity}] Schema drift detected and auto_migrate_ddl is disabled. DDL blocked.")
-                    return False, has_meta
-                return True, has_meta
+                    return False, has_meta, True
+                return True, has_meta, True
         except SchemaSyncError as exc:
             self.logger.error(f"[{entity}] Schema Guard synchronization error: {exc}")
-            return False, 0
+            return False, None, True
         except Exception as exc:
             self.logger.error(f"[{entity}] Unexpected Schema Guard error: {exc}")
-            return False, 0
+            return False, None, True
 
     def execute_entity_tasks(self, ctx: BatchContext) -> bool:
         """Registers batch state in Teradata, synchronizes schemas, and executes parallel entity workers."""
@@ -744,10 +742,11 @@ class OrchestratorService:
         self.logger.info(f"Found pending tasks for {len(pending_entities)} distinct entities in batch {ctx.batch_id}.")
 
         # 1. Just-In-Time Schema Guard pre-synchronization
-        entity_has_meta: Dict[str, int] = {}
+        entity_has_meta: Dict[str, Optional[int]] = {}
+        entity_guard_ran: Dict[str, bool] = {}
         for entity in pending_entities:
             entity_info = ctx.entities_workload[entity]
-            schema_ok, has_meta = self._sync_schema_for_entity(entity, entity_info, ctx.source)
+            schema_ok, has_meta, guard_ran = self._sync_schema_for_entity(entity, entity_info, ctx.source)
             if not schema_ok:
                 self.logger.error(f"Schema synchronization failed for entity '{entity}'. Aborting batch execution.")
                 db.update_task_end(
@@ -759,6 +758,7 @@ class OrchestratorService:
                 )
                 return False
             entity_has_meta[entity] = has_meta
+            entity_guard_ran[entity] = guard_ran
 
         # 2. Parallel TPT execution
         all_workers_ok = True
@@ -778,8 +778,8 @@ class OrchestratorService:
                         self.tpt_config,
                         self.orch_config,
                         db,
-                        has_meta=entity_has_meta.get(entity, 2),
-                        skip_precheck=True,
+                        has_meta=entity_has_meta.get(entity),
+                        skip_precheck=entity_guard_ran.get(entity, False),
                     )
                 ] = entity
 

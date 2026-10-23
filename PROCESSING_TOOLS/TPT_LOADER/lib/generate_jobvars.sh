@@ -2,10 +2,8 @@
 # ---------------------------------------------------------------------------
 # Job variables file
 # ---------------------------------------------------------------------------
-RUN_TS="$(date '+%Y%m%d_%H%M%S')"
-JOB_NAME="TPT_${TARGET_TABLE}_${RUN_TS}"
-RUN_DIR="${WORK_DIR}/${JOB_NAME}"
-mkdir -p "${RUN_DIR}" && chmod 700 "${RUN_DIR}" || die 1 "Cannot create work dir ${RUN_DIR}"
+# Note: RUN_TS, JOB_NAME, and RUN_DIR are initialized at the top of bteq_check.sh
+[ -z "${RUN_DIR}" ] && die 1 "RUN_DIR is not set; bteq_check.sh must be sourced before generate_jobvars.sh"
 JOBVARS="${RUN_DIR}/jobvars.txt"
 
 case "${LOAD_MODE}" in
@@ -13,14 +11,18 @@ case "${LOAD_MODE}" in
     append)  CONSUMER="UPDATE_OPERATOR" ;;
 esac
 
-# When metadata columns are present, DataConnector treats the column delta (e.g. 225 vs 227)
-# as missing columns. Setting RecordErrorFile to empty string prevents writing millions of
-# rows to disk while DataConnector pads the columns in memory at wire speed.
-if [ "${HAS_META}" -eq 2 ]; then
-    RECORD_ERR_FILE=""
-    log INFO "In-memory metadata padding: RecordErrorFile disabled to avoid duplicate disk I/O"
+# F1.1: Always record rejects
+RECORD_ERR_FILE="${RUN_DIR}/rejected_rows.txt"
+
+# F1.9: FileList configuration
+if [ "${USE_FILE_LIST}" = "Y" ]; then
+    TPT_FILE_LIST="Y"
+    TPT_FILE_NAME="${FILE_LIST}"
+    TPT_DIR_PATH=""
 else
-    RECORD_ERR_FILE="${RUN_DIR}/rejected_rows.txt"
+    TPT_FILE_LIST="N"
+    TPT_FILE_NAME="${FILE_NAME}"
+    TPT_DIR_PATH="${DIRECTORY_PATH}"
 fi
 
 # With the wallet, "$tdwallet(...)" reaches TPT literally and no password is
@@ -31,11 +33,6 @@ fi
     printf "UserName              = '%s'\n"   "${TD_USER}"
     printf "UserPassword          = '%s'\n"   "${TPT_PWD}"
     printf "WorkingDatabase       = '%s'\n"   "${WRK_DB}"
-    printf "\n/* Logon used by TPT to generate the schema and the INSERT from the target table */\n"
-    printf "TargetTdpId           = '%s'\n"   "${TDPID}"
-    printf "TargetUserName        = '%s'\n"   "${TD_USER}"
-    printf "TargetUserPassword    = '%s'\n"   "${TPT_PWD}"
-    printf "TargetWorkingDatabase = '%s'\n"   "${TARGET_DB}"
     printf "\n/* Target and utility tables */\n"
     printf "TargetTable           = '%s'\n"   "${FQ_TABLE}"
     printf "LogTable              = '%s.LG_%s'\n" "${WRK_DB}" "${TARGET_TABLE}"
@@ -43,16 +40,14 @@ fi
     printf "ErrorTable2           = '%s.UV_%s'\n" "${WRK_DB}" "${TARGET_TABLE}"
     printf "WorkTable             = '%s.WT_%s'\n" "${WRK_DB}" "${TARGET_TABLE}"
     printf "\n/* Source file(s) */\n"
-    printf "DirectoryPath         = '%s'\n"   "${DIRECTORY_PATH}"
-    printf "FileName              = '%s'\n"   "${FILE_NAME}"
+    printf "DirectoryPath         = '%s'\n"   "${TPT_DIR_PATH}"
+    printf "FileName              = '%s'\n"   "${TPT_FILE_NAME}"
+    printf "FileList              = '%s'\n"   "${TPT_FILE_LIST}"
     printf "TextDelimiter         = '%s'\n"   "${DELIMITER}"
     printf "SkipRows              = %s\n"     "${SKIP_ROWS}"
     printf "SkipRowsEveryFile     = '%s'\n"   "${SKIP_ROWS_EVERY_FILE:-N}"
     printf "MultipleReaders       = '%s'\n"   "${MULTIPLE_READERS}"
     printf "RecordErrorFile       = '%s'\n"   "${RECORD_ERR_FILE}"
-    printf "\n/* Audit Metadata Context */\n"
-    printf "BatchId               = '%s'\n"   "${BATCH_ID}"
-    printf "Timestamp             = '%s'\n"   "${META_TS}"
     printf "\n/* Tuning */\n"
     printf "ErrorLimit            = %s\n"     "${ERROR_LIMIT}"
     printf "MaxSessions           = %s\n"     "${MAX_SESSIONS}"

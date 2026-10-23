@@ -41,6 +41,7 @@ TPT_DIR = os.path.join(BASE_DIR, "PROCESSING_TOOLS", "TPT_LOADER")
 sys.path.insert(0, COMMON_DIR)
 sys.path.insert(0, FEEDER_DIR)
 sys.path.insert(0, ORCH_DIR)
+sys.path.insert(0, os.path.join(TPT_DIR, "lib"))
 
 # Ensure teradatasql is importable even in mock mode if needed
 if "teradatasql" not in sys.modules:
@@ -55,7 +56,8 @@ from lib.schema_guard import (
     sync_entity_schema_if_drifted,
 )
 from lib.db_state import TeradataStateDB
-from lib.tpt_worker import run_tpt_loader
+from lib.tpt_worker import RunResult, run_tpt_loader
+from parse_header import extract_header_columns
 
 
 class TestPhase01Units(unittest.TestCase):
@@ -168,8 +170,7 @@ class TestPhase01Units(unittest.TestCase):
             self.assertIn("ORACLE_FUSION", params, f"Missing source param in {params}")
 
     def test_column_sanitization_parity(self):
-        """Verify 100% parity between Python clean_column_name and Bash clean_column_name."""
-        env_helpers = os.path.join(TPT_DIR, "lib", "env_and_helpers.sh")
+        """Verify 100% parity between schema_reader.clean_column_name and parse_header.extract_header_columns."""
         test_headers = [
             '"USER - ID"',
             '"EMAIL / ADDRESS"',
@@ -180,22 +181,22 @@ class TestPhase01Units(unittest.TestCase):
         ]
         for raw in test_headers:
             py_cleaned = clean_column_name(raw)
-            if os.name != "nt":
-                res = subprocess.run(
-                    ["bash", "-c", f'source "{env_helpers}" && clean_column_name { subprocess.list2cmdline([raw]) }'],
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-                bash_cleaned = res.stdout.strip()
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as f:
+                f.write(raw + "\n")
+                tmp_name = f.name
+            try:
+                extracted = extract_header_columns(tmp_name)[0]
                 self.assertEqual(
                     py_cleaned,
-                    bash_cleaned,
-                    f"Parity mismatch for {raw!r}: Python={py_cleaned!r} vs Bash={bash_cleaned!r}",
+                    extracted,
+                    f"Parity mismatch for {raw!r}: Python={py_cleaned!r} vs Extracted={extracted!r}",
                 )
+            finally:
+                if os.path.exists(tmp_name):
+                    os.remove(tmp_name)
 
     def test_tpt_worker_args(self):
-        """Verify run_tpt_loader passes -Y to load_csv_generic.sh and -m/-B/-T to unlock_tpt_table.sh."""
+        """Verify run_tpt_loader passes -j, -Y to load_csv_generic.sh and -j/-m/-B/-T to unlock_tpt_table.sh."""
         mock_db = MagicMock()
         with tempfile.TemporaryDirectory() as tmp_work_dir:
             tpt_cfg = {
@@ -210,12 +211,11 @@ class TestPhase01Units(unittest.TestCase):
             }
             orch_cfg = {"loading_zone": "/tmp/loading"}
 
-            mock_proc_ok = MagicMock()
-            mock_proc_ok.returncode = 0
-            mock_proc_ok.stdout = "Load OK"
-            mock_proc_ok.stderr = ""
+            mock_res_ok = RunResult(returncode=0, output_path=os.path.join(tmp_work_dir, "test.out"))
+            with open(mock_res_ok.output_path, "w", encoding="utf-8") as f:
+                f.write("Load OK\n")
 
-            with patch("lib.tpt_worker.subprocess.run", return_value=mock_proc_ok) as mock_run:
+            with patch("lib.tpt_worker._run", return_value=mock_res_ok) as mock_run:
                 ent, success = run_tpt_loader(
                     entity="ERP_MSH_USER",
                     file_path_or_pattern="file_userpvo.csv",
@@ -237,7 +237,7 @@ class TestPhase01Units(unittest.TestCase):
                 unlock_call_args = mock_run.call_args_list[0][0][0]
                 load_call_args = mock_run.call_args_list[1][0][0]
 
-                # Verify unlock_cmd includes -m append -B 9009 -T 20261016_100800
+                # Verify unlock_cmd includes -m append -B 9009 -T 20261016_100800 and -j
                 self.assertIn("-m", unlock_call_args)
                 m_idx = unlock_call_args.index("-m")
                 self.assertEqual(unlock_call_args[m_idx + 1], "append")
@@ -247,11 +247,17 @@ class TestPhase01Units(unittest.TestCase):
                 self.assertIn("-T", unlock_call_args)
                 t_idx = unlock_call_args.index("-T")
                 self.assertEqual(unlock_call_args[t_idx + 1], "20261016_100800")
+                self.assertIn("-j", unlock_call_args)
+                j_idx = unlock_call_args.index("-j")
+                self.assertTrue(unlock_call_args[j_idx + 1].startswith("TPT_ERP_MSH_USER_"))
 
-                # Verify load_cmd includes -Y Y
+                # Verify load_cmd includes -Y Y and -j
                 self.assertIn("-Y", load_call_args)
                 y_idx = load_call_args.index("-Y")
                 self.assertEqual(load_call_args[y_idx + 1], "Y")
+                self.assertIn("-j", load_call_args)
+                j_idx2 = load_call_args.index("-j")
+                self.assertTrue(load_call_args[j_idx2 + 1].startswith("TPT_ERP_MSH_USER_"))
 
 
 if __name__ == "__main__":

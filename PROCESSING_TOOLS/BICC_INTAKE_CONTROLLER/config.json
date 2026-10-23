@@ -18,7 +18,7 @@
     ]
   },
   "schema_guard": {
-    "auto_migrate_ddl": true,
+    "auto_migrate_ddl": false,
     "default_column_type": "VARCHAR(4000)",
     "character_set": "UNICODE",
     "target_database": "${TDENV}SIDFINSTG",

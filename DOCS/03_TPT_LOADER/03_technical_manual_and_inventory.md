@@ -12,27 +12,29 @@ TPT_LOADER/
 ├── config/
 │   └── global.env                # Default environment variables & DB names
 └── lib/                          # Specialized modular bash components
-    ├── env_and_helpers.sh        # Logging (log, die), clean_column_name, path normalization
-    ├── parse_args.sh             # Two-pass configuration & CLI argument parsing (-C, -M)
-    ├── pre_checks.sh             # Binary presence, file existence, regex parsing
-    ├── bteq_check.sh             # Fast-path bypass (-C) or DBC.ColumnsV query & DAT-01/02
-    ├── generate_jobvars.sh       # Runtime jobvars.txt synthesis & memory padding (HAS_META=2)
-    ├── load_csv_generic.tpt      # Parameterized generic TPT script
-    ├── run_tpt.sh                # Execution of tbuild & return code parsing
-    ├── update_metadata.sh        # BTEQ metadata backfill (INFA_BATCH_ID / TS)
+    ├── env_and_helpers.sh        # Logging (log, die), path normalization, SQL identifier validation
+    ├── parse_args.sh             # Two-pass configuration & CLI argument parsing (-C, -M, -L, -j)
+    ├── pre_checks.sh             # Binary presence, file/list validation, regex parsing
+    ├── bteq_check.sh             # Unconditional DBC.ColumnsV query & DAT-01/02 pre-checks
+    ├── parse_header.py           # POSIX Python CSV header extractor with parity sanitization
+    ├── generate_jobvars.sh       # Runtime jobvars.txt synthesis & rejected_rows.txt configuration
+    ├── load_csv_generic.tpt.template # Parameterized generic TPT template
+    ├── generate_tpt_job.sh       # Dynamic job.tpt generator with typed payload schema & inline audit
+    ├── run_tpt.sh                # Execution of tbuild, rejected rows monitoring & return code parsing
     └── archive_files.sh          # Post-load file movement to archive
 ```
 
 ```mermaid
 graph TD
     Main["load_csv_generic.sh"] --> Env["1. env_and_helpers.sh"]
-    Main --> Parse["2. parse_args.sh (Two-Pass Loader, -C, -M)"]
+    Main --> Parse["2. parse_args.sh (Two-Pass Loader, -C, -M, -L, -j)"]
     Main --> Pre["3. pre_checks.sh"]
-    Main --> Bteq["4. bteq_check.sh (-C Bypass OR DBC.ColumnsV / DAT-01 / DAT-02)"]
-    Main --> Gen["5. generate_jobvars.sh (HAS_META=2 -> RecordErrorFile='')"]
-    Gen -.-> TPT["load_csv_generic.tpt"]
-    Main --> Run["6. run_tpt.sh (tbuild)"]
-    Main --> Meta["7. update_metadata.sh (BTEQ Update)"]
+    Main --> Bteq["4. bteq_check.sh (DBC.ColumnsV Query & DAT-01 / DAT-02)"]
+    Bteq -.-> ParseHeader["parse_header.py (Python Header Sanitizer)"]
+    Main --> GenVars["5. generate_jobvars.sh (rejected_rows.txt)"]
+    Main --> GenJob["6. generate_tpt_job.sh (job.tpt from template)"]
+    GenJob -.-> Template["load_csv_generic.tpt.template"]
+    Main --> Run["7. run_tpt.sh (tbuild)"]
     Main --> Arch["8. archive_files.sh"]
 ```
 
@@ -43,28 +45,28 @@ graph TD
 ### 2.1 Main Wrapper: `load_csv_generic.sh`
 - **Path**: `load_csv_generic.sh`
 - **Role**: Coordinates the sourcing of modules under strict shell safety (`set -o pipefail`).
+- **Execution Flow**: Sources `env_and_helpers.sh` $\rightarrow$ `parse_args.sh` $\rightarrow$ `pre_checks.sh` $\rightarrow$ `bteq_check.sh` $\rightarrow$ `generate_jobvars.sh` $\rightarrow$ `generate_tpt_job.sh` $\rightarrow$ `run_tpt.sh` $\rightarrow$ `archive_files.sh`.
 
 ---
 
 ### 2.2 Module: `lib/env_and_helpers.sh`
 - **Path**: `lib/env_and_helpers.sh`
-- **Role**: Standardized logging, exit handling, SQL identifier validation, literal escaping, and header column sanitization.
+- **Role**: Standardized logging, exit handling, SQL identifier validation, and literal escaping.
 - **Key Functions**:
   1. `log(level, message)`: Prints timestamped log lines formatted as `YYYY-MM-DD HH:MM:SS [LEVEL] message`.
   2. `die(code, message)`: Logs message at `ERROR` level and exits shell immediately with `exit ${code}`.
   3. `validate_identifier(val, label)`: Enforces `^[A-Za-z0-9_]+$` on SQL identifiers (`TARGET_DB`, `TARGET_TABLE`, `WRK_DB`).
   4. `escape_sql_literal(val)`: Escapes single quotes (`'` $\rightarrow$ `''`) before SQL interpolation.
-  5. `clean_column_name(col_raw)`: Sanitizes CSV header column names (`[^A-Za-z0-9_]` $\rightarrow$ `_`, deduplicates `_`, uppercase) in 100% parity with `COMMON/dataloader_core/schema_reader.py`.
 
 ---
 
 ### 2.3 Module: `lib/parse_args.sh`
 - **Path**: `lib/parse_args.sh`
 - **Role**: Implements a robust **two-pass configuration loader**:
-  - **Pass 1**: Loads defaults from `config/global.env` and optional `-v <jobvars>` configuration file (including `SkipRowsEveryFile`, `SkipBteqCheck`, `HasMeta`).
-  - **Pass 2**: Parses explicit CLI flags (`-f`, `-t`, `-m`, `-B`, `-T`, `-S`, `-Y`, `-C`, `-M`), overriding defaults.
+  - **Pass 1**: Loads defaults from `config/global.env` and optional `-v <jobvars>` configuration file (including `SkipRowsEveryFile`, `SkipBteqCheck`, `HasMeta`). Defaults `TD_USER="${TD_LOGON_USER:-${TDENV}${SID_ADM_USER}}"`.
+  - **Pass 2**: Parses explicit CLI flags (`-f`, `-L`, `-t`, `-m`, `-B`, `-T`, `-S`, `-Y`, `-C`, `-M`, `-j`), overriding defaults.
   - Sanitizes quotes and whitespace from arguments.
-  - Recognizes `-C` (`SKIP_BTEQ_CHECK="Y"`) and `-M <has_meta>` (`CLI_HAS_META="${OPTARG}"`).
+  - Recognizes `-L <listfile>` for explicit file lists, `-j <job_name>` for standardized TPT job names, `-C` (`SKIP_BTEQ_CHECK="Y"`), and `-M <has_meta>` (`CLI_HAS_META="${OPTARG}"`).
 
 ---
 
@@ -72,70 +74,63 @@ graph TD
 - **Path**: `lib/pre_checks.sh`
 - **Role**: Pre-execution validation:
   1. Verifies that `tbuild` and `bteq` executables exist in system `$PATH`.
-  2. Verifies that input data files or wildcards resolve to existing files.
-  3. Extracts batch ID and timestamp via regex patterns if `-B` or `-T` were omitted.
+  2. Validates mutually exclusive file sources: either single file/wildcard (`-f`) or explicit file list (`-L`).
+  3. Forces `ReaderInstances=1` for multi-file loads when `SkipRowsEveryFile=N` and `SkipRows>0` to prevent skipping rows across chunk boundaries out of sequence.
   4. Resolves credentials: checks `$TD_PASSWORD` first; if unset, uses Teradata Wallet syntax `\$tdwallet(${TD_USER})`.
+  5. Enforces strict audit metadata requirements: when `HAS_META=2`, requires non-empty `-B` (batch ID) and `-T` (timestamp) with no fabricated `date` fallbacks.
 
 ---
 
 ### 2.5 Module: `lib/bteq_check.sh`
 - **Path**: `lib/bteq_check.sh`
-- **Role**: Performs pre-flight database introspection via BTEQ or fast-path bypass:
-  1. **Fast-Path Bypass (`-C`)**: If `SKIP_BTEQ_CHECK == "Y"`, assigns `HAS_META="${CLI_HAS_META:-2}"` and skips querying `DBC.ColumnsV`.
-  2. **DBC Introspection**: When `-C` is omitted, queries `DBC.ColumnsV` for target table column count (`NBCOL`) and checks presence of audit columns (`HAS_META = 2`).
-  3. **DAT-01 named column alignment check**: When `SkipRows > 0` and `-C` is omitted, iterates through CSV header columns and compares each column name and ordinal position against `DBC.ColumnsV`.
-  4. **DAT-02 append safety check**: When `LOAD_MODE = 'append'` and `HAS_META == 2`, queries `SELECT COUNT(*) FROM table WHERE INFA_BATCH_ID IS NULL`. If count $>0$, halts immediately to avoid historical data corruption (enforced even if `-C` is specified).
+- **Role**: Performs pre-flight database introspection via BTEQ:
+  1. **Unconditional DBC Introspection**: Always queries `DBC.ColumnsV` for target table column definitions (excluding audit columns), column types, and checks presence of audit columns (`HAS_META`).
+  2. **Column Count Enforcement**: Always validates that incoming file column count matches target table payload column count (even when `-C` is passed).
+  3. **DAT-01 Named Column Alignment Check**: When `SkipRows > 0` and `-C` is omitted, executes `lib/parse_header.py` to extract and sanitize CSV header columns, verifying 1-to-1 ordinal parity with `DBC.ColumnsV`.
+  4. **DAT-02 Append Safety Check**: When `LOAD_MODE = 'append'` and `HAS_META == 2`, queries `SELECT COUNT(*) FROM table WHERE INFA_BATCH_ID IS NULL`. If count $>0$, halts immediately to prevent historical data corruption (enforced even if `-C` is specified).
 
 ---
 
-### 2.6 Module: `lib/generate_jobvars.sh`
+### 2.6 Helper: `lib/parse_header.py`
+- **Path**: `lib/parse_header.py`
+- **Role**: POSIX-safe Python helper script for CSV header parsing and sanitization:
+  - Uses standard Python `csv` reader to correctly handle quoted fields containing commas, tabs, spaces, and escaped characters.
+  - Applies `clean_column_name()` in 100% parity with `COMMON/dataloader_core/schema_reader.py`.
+  - Outputs space-separated sanitized column names for ingestion by `bteq_check.sh`.
+
+---
+
+### 2.7 Module: `lib/generate_jobvars.sh`
 - **Path**: `lib/generate_jobvars.sh`
-- **Role**: Synthesizes the runtime `jobvars.txt` in an isolated directory `${WORK_DIR}/LOAD_<TABLE>_<RUN_TS>/`:
+- **Role**: Synthesizes runtime `jobvars.txt` in an isolated directory `${WORK_DIR}/${JOB_NAME}/`:
   1. Creates job directory with restricted permissions (`chmod 700`).
   2. Selects consumer operator: `LOAD_OPERATOR` (replace) or `UPDATE_OPERATOR` (append).
-  3. **In-Memory Padding Logic**: When `HAS_META == 2`, sets `RecordErrorFile = ""` to prevent Teradata DataConnector from dumping millions of padding warnings to disk while padding columns in memory.
-  4. Writes connection parameters, target table names, work table names (`LG_`, `ET_`, `UV_`, `WT_`), delimiter, skip rows, and tuning limits.
-  5. Restricts file permissions to `chmod 600`.
+  3. Supports `FileList = 'Y'` and `FileName = '${FILE_LIST}'` when `-L` is passed.
+  4. **Strict Rejection Configuration**: Sets `RECORD_ERR_FILE` unconditionally to `${RUN_DIR}/rejected_rows.txt` to capture any rejected rows.
+  5. Writes connection parameters, target table names, work table names (`LG_`, `ET_`, `UV_`, `WT_`), delimiter, skip rows, and tuning limits.
+  6. Restricts file permissions to `chmod 600`.
 
 ---
 
-### 2.7 TPT Job Template: `lib/load_csv_generic.tpt`
-- **Path**: `lib/load_csv_generic.tpt`
-- **Role**: Generic Teradata Parallel Transporter definition file.
-- **Components**:
-  - `DEFINE SCHEMA TGT_SCHEMA FROM TABLE DELIMITED @TargetTable;`: Dynamically derives schema from Teradata dictionary.
-  - `DDL_OPERATOR`: Issues `DELETE ALL` on target table in replace mode and drops leftover work/error tables (`3807` error ignored).
-  - `FILE_READER`: `DATACONNECTOR PRODUCER` with `Format = 'Delimited'`, `AcceptMissingColumns = 'Y'`, and double-quote handling.
-  - `LOAD_OPERATOR`: FastLoad bulk consumer operator for replace mode.
-  - `UPDATE_OPERATOR`: MultiLoad consumer operator for append mode.
-- **Job Steps**:
-  - Step 1: `Truncate_Target` (replace mode only).
-  - Step 2: `Cleanup_Previous_Run`.
-  - Step 3: `Load_Data`.
+### 2.8 Module: `lib/generate_tpt_job.sh` & Template: `lib/load_csv_generic.tpt.template`
+- **Path**: `lib/generate_tpt_job.sh` and `lib/load_csv_generic.tpt.template`
+- **Role**: Generates the final executable `job.tpt` from the parameterized template:
+  1. **Strict Guardrails**: `AcceptMissingColumns = 'N'`, `AcceptExcessColumns = 'N'`, `TruncateColumnData = 'N'`.
+  2. **Typed Payload Schema**: Produces `DEFINE SCHEMA PAYLOAD_SCHEMA` matching only the payload columns in the file, with Teradata data types (VARCHAR, INTEGER, DECIMAL, DATE, TIMESTAMP).
+  3. **Inline Audit Injection**: When `HAS_META == 2`, generates an `APPLY $INSERT` statement that binds payload fields and directly injects literal audit expressions `'${BATCH_ID}'` and `TIMESTAMP '${META_TS}'`.
 
 ---
 
-### 2.8 Module: `lib/run_tpt.sh`
+### 2.9 Module: `lib/run_tpt.sh`
 - **Path**: `lib/run_tpt.sh`
 - **Role**: Launches `tbuild`:
   ```bash
-  tbuild -f load_csv_generic.tpt -v jobvars.txt -j LOAD_<TABLE>_<TS>
+  tbuild -f job.tpt -v jobvars.txt -j <JOB_NAME>
   ```
 - Evaluates exit code:
-  - Codes `0` (Success) and `4` (Warning) are treated as successful completions.
+  - Codes `0` (Success) and `4` (Warning) indicate successful loads.
   - Codes `8` (Fatal) and `12` (Error) trigger job failure and exit code `3`.
-
----
-
-### 2.9 Module: `lib/update_metadata.sh`
-- **Path**: `lib/update_metadata.sh`
-- **Role**: If `HAS_META == 2`, executes targeted BTEQ SQL to backfill technical metadata on newly loaded rows:
-  ```sql
-  UPDATE ${TARGET_DB}.${TARGET_TABLE}
-  SET INFA_BATCH_ID = '${BATCH_ID}',
-       INFA_LAST_REPLICATED = '${META_TS}'
-  WHERE INFA_BATCH_ID IS NULL;
-  ```
+- Rejection Accounting: Inspects `${RUN_DIR}/rejected_rows.txt` and logs count of rejected rows.
 
 ---
 
@@ -149,7 +144,7 @@ graph TD
 - **Path**: `unlock_tpt_table.sh`
 - **Role**: Unlocks tables left locked (Error 2652) by crashed TPT runs:
   - In `append` mode: Issues `RELEASE MLOAD <table_name>;` via BTEQ.
-  - In `replace` mode: Finds the latest `jobvars.txt` in `WORK_DIR`, resumes the interrupted FastLoad job via `tbuild`, queries `HAS_META` from `DBC.ColumnsV`, and sources `lib/update_metadata.sh` to backfill `INFA_BATCH_ID` and `INFA_LAST_REPLICATED` on the recovered table.
+  - In `replace` mode: Requires `-j <job_name>` identifying the exact failed TPT job directory `${WORK_DIR}/${JOB_NAME}` containing `jobvars.txt` and `job.tpt`, resuming the job to completion via `tbuild`.
 
 ---
 
@@ -162,7 +157,7 @@ Every TPT job manages four technical tables in the utility database:
 3. `UV_<TABLE>`: Error Table 2 (captures phase 2 uniqueness constraint violations).
 4. `WT_<TABLE>`: Work table used during MultiLoad processing.
 
-### 3.2 Pre-Flight Query on `DBC.ColumnsV`
+### 3.2 Pre-Flight Introspection Query on `DBC.ColumnsV`
 ```sql
 SELECT 'NBCOL=' || TRIM(COUNT(*)) (TITLE '')
 FROM DBC.ColumnsV
@@ -173,7 +168,9 @@ FROM DBC.ColumnsV
 WHERE DatabaseName = '${TARGET_DB}' AND TableName = '${TARGET_TABLE}'
   AND ColumnName IN ('INFA_BATCH_ID', 'INFA_LAST_REPLICATED');
 
-SELECT 'COLNAME=' || TRIM(ColumnName) (TITLE '')
+SELECT TRIM(ColumnName) || '|' || TRIM(ColumnType) || '|' || TRIM(ColumnLength) || '|' ||
+       TRIM(COALESCE(DecimalTotalDigits, 0)) || '|' || TRIM(COALESCE(DecimalFractionalDigits, 0)) || '|' ||
+       TRIM(COALESCE(CharType, 0))
 FROM DBC.ColumnsV
 WHERE DatabaseName = '${TARGET_DB}' AND TableName = '${TARGET_TABLE}'
   AND ColumnName NOT IN ('INFA_BATCH_ID', 'INFA_LAST_REPLICATED')

@@ -3,10 +3,12 @@
 # Arguments Parsing
 # ---------------------------------------------------------------------------
 FILE_SPEC=""
+FILE_LIST=""
+CLI_JOB_NAME=""
 TARGET_TABLE=""
 TARGET_DB="${TDENV}${DB_STG}"
 WRK_DB="${TDENV}${DB_WRK}"
-TD_USER="${TDENV}${SID_ADM_USER}"
+TD_USER="${TD_LOGON_USER:-${TDENV}${SID_ADM_USER}}"
 LOAD_MODE="replace"
 DELIMITER=","
 ERROR_LIMIT=1
@@ -28,11 +30,13 @@ TIMESTAMP_PATTERN=""
 # First pass: look for a job variables config file (-v)
 OPTIND=1
 JOB_VARS_FILE=""
-while getopts ":f:t:d:k:u:m:s:e:r:l:x:S:Y:a:w:B:T:b:c:v:CM:h" opt; do
+while getopts ":f:t:d:k:u:m:s:e:r:l:x:S:Y:a:w:B:T:b:c:v:CM:L:j:h" opt; do
     case "${opt}" in
         v) JOB_VARS_FILE="${OPTARG}" ;;
         C) SKIP_BTEQ_CHECK="Y" ;;
         M) CLI_HAS_META="${OPTARG}" ;;
+        L) FILE_LIST="${OPTARG}" ;;
+        j) CLI_JOB_NAME="${OPTARG}" ;;
     esac
 done
 
@@ -54,6 +58,8 @@ if [ -n "${JOB_VARS_FILE}" ]; then
         FILE_SPEC="${FILE_NAME_VAR}"
     fi
     
+    VAL="$(get_var FileList)";         [ -n "$VAL" ] && FILE_LIST="$VAL"
+    VAL="$(get_var JobName)";          [ -n "$VAL" ] && CLI_JOB_NAME="$VAL"
     VAL="$(get_var TargetTable)";      [ -n "$VAL" ] && TARGET_TABLE="$VAL"
     VAL="$(get_var TargetDatabase)";   [ -n "$VAL" ] && TARGET_DB="$VAL"
     VAL="$(get_var UtilityDatabase)";  [ -n "$VAL" ] && WRK_DB="$VAL"
@@ -83,9 +89,11 @@ fi
 
 # Second pass: apply CLI arguments (overrides config file)
 OPTIND=1
-while getopts ":f:t:d:k:u:m:s:e:r:l:x:S:Y:a:w:B:T:b:c:v:CM:h" opt; do
+while getopts ":f:t:d:k:u:m:s:e:r:l:x:S:Y:a:w:B:T:b:c:v:CM:L:j:h" opt; do
     case "${opt}" in
         f) FILE_SPEC="${OPTARG}" ;;
+        L) FILE_LIST="${OPTARG}" ;;
+        j) CLI_JOB_NAME="${OPTARG}" ;;
         t) TARGET_TABLE="${OPTARG}" ;;
         d) TARGET_DB="${OPTARG}" ;;
         k) WRK_DB="${OPTARG}" ;;
@@ -113,8 +121,13 @@ while getopts ":f:t:d:k:u:m:s:e:r:l:x:S:Y:a:w:B:T:b:c:v:CM:h" opt; do
     esac
 done
 
-# Strip surrounding single or double quotes from FILE_SPEC
+# Strip surrounding single or double quotes from FILE_SPEC and FILE_LIST
 FILE_SPEC="${FILE_SPEC%\"}"
 FILE_SPEC="${FILE_SPEC#\"}"
 FILE_SPEC="${FILE_SPEC%\'}"
 FILE_SPEC="${FILE_SPEC#\'}"
+
+FILE_LIST="${FILE_LIST%\"}"
+FILE_LIST="${FILE_LIST#\"}"
+FILE_LIST="${FILE_LIST%\'}"
+FILE_LIST="${FILE_LIST#\'}"

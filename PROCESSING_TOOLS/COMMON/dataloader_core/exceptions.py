@@ -39,5 +39,9 @@ class SchemaSyncError(DataLoaderError, RuntimeError):
     """
 
 
+class SchemaDriftError(SchemaSyncError):
+    """Raised when the file columns do not match the table and no safe evolution is possible."""
+
+
 class OrchestratorExecutionError(DataLoaderError):
     """Raised when Orchestrator subprocess delegation or entity worker execution fails."""

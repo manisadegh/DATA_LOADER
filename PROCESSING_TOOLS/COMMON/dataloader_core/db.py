@@ -123,8 +123,7 @@ def build_tpt_environment(
     )
     user = td_cfg.get("user") or td_cfg.get("username") or env_user
     if user:
-        tpt_env["SID_ADM_USER"] = str(user)
-        tpt_env["USER"] = str(user)
+        tpt_env["TD_LOGON_USER"] = str(user)
 
     return tpt_env
 

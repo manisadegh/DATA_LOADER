@@ -2,31 +2,30 @@
 
 ## 1. Business & Functional Objective
 
-The **TPT_LOADER** (`load_csv_generic.sh`) provides a generic, metadata-driven bulk loading framework feeding **Teradata Vantage** from flat-file extracts. Rather than requiring distinct, handcrafted load scripts for every database table, TPT Loader leverages dynamic schema derivation, fast-path BTEQ pre-check bypass (`-C -M 2`), and in-memory padding to load any staging table using a single, parameterized engine.
+The **TPT_LOADER** (`load_csv_generic.sh`) provides a generic, metadata-driven bulk loading framework feeding **Teradata Vantage** from flat-file extracts. Rather than requiring distinct, handcrafted load scripts for every database table, TPT Loader leverages dynamic TPT job generation, strict row validation, fast-path schema pre-check bypass (`-C -M 2`), and inline audit column population to load any staging table using a single, parameterized engine.
 
 ```mermaid
 flowchart TD
     subgraph INPUT["Input Extract File(s)"]
-        CSV["Delimited Data File<br/>(Single File or Multi-Part Wildcard)"]
+        CSV["Delimited Data File(s)<br/>(Single File, File List -L, or Wildcard -f)"]
     end
 
     subgraph ENGINE["TPT_LOADER Engine Architecture"]
         direction TB
-        Pre["1. Pre-Flight Validation<br/>(-C Bypass OR DBC.ColumnsV / DAT-01 / DAT-02)"]
-        Jobvar["2. Jobvars Synthesis<br/>(Credentials, Tables, Delimiters)"]
-        TPT["3. TPT Execution (tbuild)<br/>- Schema: FROM TABLE DELIMITED<br/>- Consumer: LOAD (FastLoad) / UPDATE (MultiLoad)<br/>- Memory Padding: AcceptMissingColumns='Y'"]
-        Update["4. Audit Backfill (BTEQ)<br/>- INFA_BATCH_ID<br/>- INFA_LAST_REPLICATED"]
+        Pre["1. Pre-Flight Validation<br/>(DBC.ColumnsV Query, File/Count Verification, DAT-01 / DAT-02)"]
+        Jobvar["2. Jobvars Synthesis<br/>(Credentials, Tables, Delimiters, rejected_rows.txt)"]
+        GenTPT["3. Dynamic TPT Job Generation (generate_tpt_job.sh)<br/>- Explicit Payload Schema: DEFINE SCHEMA PAYLOAD_SCHEMA<br/>- Strict Rejection: AcceptMissingColumns='N'<br/>- Inline Audit INSERT: VALUES (:col, ..., 'batch_id', TIMESTAMP 'ts')"]
+        TPT["4. TPT Execution (tbuild)<br/>- Consumer: LOAD (FastLoad) / UPDATE (MultiLoad)<br/>- Exit Code: 0 / 4 (Success), 8 / 12 (Failure)"]
     end
 
     subgraph TARGET["Teradata Vantage"]
-        Staging["Staging Table<br/>(${TDENV}SIDFINSTG.TABLE)"]
+        Staging["Staging Table<br/>(${TDENV}SIDFINSTG.TABLE)<br/>(Audit Columns Populated Atomically)"]
         Utility["Work / Error Tables<br/>(${TDENV}SIDFINWRK.ET_, UV_, WT_, LG_)"]
     end
 
-    CSV --> Pre --> Jobvar --> TPT
+    CSV --> Pre --> Jobvar --> GenTPT --> TPT
     TPT --> Utility
     TPT --> Staging
-    TPT --> Update --> Staging
 ```
 
 ---
@@ -34,21 +33,33 @@ flowchart TD
 ## 2. Core Functional Responsibilities
 
 ### What TPT Loader Does:
-1. **Dynamic Schema Derivation**: Automatically reads target table definitions from Teradata metadata (`DEFINE SCHEMA TGT_SCHEMA FROM TABLE DELIMITED @TargetTable`), eliminating manual column mappings.
-2. **Fast-Path Schema Pre-Check Bypass (`-C -M 2`)**:
-   - When invoked by `DATA_INGESTION_ORCHESTRATOR`, table structure is already pre-synchronized via JIT Schema Guard.
-   - Passing `-C` bypasses the BTEQ `DBC.ColumnsV` introspection query in `replace` mode, eliminating redundant database round-trips.
-   - In `append` mode, even when `-C` is passed, the `DAT-02` metadata null-check is strictly enforced to protect existing records from corruption.
-3. **Pre-Flight Structural Validation (Standalone / Default)**:
-   - When `-C` is omitted, compares file column count against Teradata catalog `DBC.ColumnsV`.
-   - **DAT-01 named column alignment**: When `SkipRows > 0`, checks position-by-position that CSV header column names match Teradata staging column names.
-   - **DAT-02 append safety**: In append mode, checks that no pre-existing rows have `INFA_BATCH_ID IS NULL` before loading, preventing accidental metadata overwrites.
-4. **Dual Loading Engines**:
+1. **Explicit Typed Payload Schema Generation (`generate_tpt_job.sh`)**:
+   - Queries Teradata catalog `DBC.ColumnsV` to retrieve table column definitions (excluding technical audit columns `INFA_BATCH_ID` and `INFA_LAST_REPLICATED`).
+   - Generates an explicit `DEFINE SCHEMA PAYLOAD_SCHEMA ( ... )` matching the exact field count and data types of the incoming file.
+2. **Strict Row Rejection Guardrails**:
+   - Sets `AcceptMissingColumns = 'N'`, `AcceptExcessColumns = 'N'`, and `TruncateColumnData = 'N'`.
+   - Any malformed line (missing delimiters, extra fields, truncated text) is rejected by Teradata DataConnector and written to `${RUN_DIR}/rejected_rows.txt`.
+   - With `ErrorLimit = 1` (default), any malformed line halts the job immediately, preventing silent data truncation or column misalignment.
+3. **Inline Audit Column Population (No Post-Load UPDATE)**:
+   - When the staging table contains audit columns (`HAS_META = 2`), the generated `APPLY` statement inserts incoming payload columns and injects literal audit expressions directly:
+     ```sql
+     APPLY $INSERT INTO @TargetTable ( ... , INFA_BATCH_ID, INFA_LAST_REPLICATED )
+     VALUES ( :COL1, :COL2, ... , '${BATCH_ID}', TIMESTAMP '${META_TS}' );
+     ```
+   - Audit columns are populated atomically during block transfer, eliminating post-load table updates and table scans.
+4. **Unconditional Structural Pre-Flight Verification**:
+   - BTEQ queries `DBC.ColumnsV` unconditionally to fetch physical column definitions and measure `HAS_META`.
+   - Compares the file column count against Teradata catalog `DBC.ColumnsV` payload column count.
+   - **Fast-Path Bypass (`-C`)**: When `-C` is provided by `DATA_INGESTION_ORCHESTRATOR`, positional column name comparison is skipped (as JIT Schema Guard already synchronized names), but column count checks and `DBC.ColumnsV` queries always run.
+   - **DAT-01 named column alignment**: When `-C` is omitted and `SkipRows > 0`, invokes POSIX-safe Python helper `parse_header.py` to compare CSV header column names against `DBC.ColumnsV` in identical ordinal positions.
+   - **DAT-02 append safety**: In append mode, checks that no pre-existing rows have `INFA_BATCH_ID IS NULL` before loading, preventing accidental metadata corruption.
+5. **Dual Loading Engines**:
    - **Replace Mode (`FastLoad`)**: Issues `DELETE ALL` on the target table, then loads at maximum wire speed using Teradata's block-level `LOAD_OPERATOR`.
    - **Append Mode (`MultiLoad`)**: Inserts new records into existing tables without dropping prior data using Teradata's `UPDATE_OPERATOR`.
-5. **Zero-Disk Metadata Padding**: Allows source files without technical audit columns to be ingested without file manipulation (`AcceptMissingColumns = 'Y'`). DataConnector pads missing columns in memory with `NULL`. When `-M 2` is set, `RecordErrorFile = ""` suppresses disk logging of missing audit columns.
-6. **In-Database Audit Backfill**: Issues a targeted SQL `UPDATE` via BTEQ setting `INFA_BATCH_ID` and `INFA_LAST_REPLICATED` on newly loaded rows (`WHERE INFA_BATCH_ID IS NULL`).
-7. **Automatic Cleanup**: Automatically drops leftover utility tables (`ET_`, `UV_`, `WT_`, `LG_`) from prior runs before loading.
+6. **Support for Explicit File Lists (`-L`) and Wildcards (`-f`)**:
+   - Ingests single files, multi-file lists generated by the orchestrator (`-L <listfile>`), or wildcard patterns (`-f <pattern>`).
+7. **Automatic Cleanup & Work Table Management**:
+   - Drops leftover utility tables (`ET_`, `UV_`, `WT_`, `LG_`) from prior runs before loading.
 
 ---
 
@@ -60,27 +71,26 @@ sequenceDiagram
     participant Caller as Caller (Orchestrator / CLI)
     participant Wrapper as load_csv_generic.sh
     participant DBC as Teradata DBC.ColumnsV
-    participant Gen as generate_jobvars.sh
+    participant GenVars as generate_jobvars.sh
+    participant GenTPT as generate_tpt_job.sh
     participant TBuild as tbuild (TPT)
     participant Staging as Staging Table (${TDENV}SIDFINSTG)
-    participant BTEQ as BTEQ (update_metadata.sh)
 
-    Caller->>Wrapper: Invoke (-f file, -t table, -B batch, -T ts, -m mode, [-C], [-M 2])
-    alt -C Provided (Fast-Path Replace Mode)
-        Note over Wrapper: Skip BTEQ DBC.ColumnsV query (Pre-synchronized by Orchestrator)
+    Caller->>Wrapper: Invoke (-f/-L, -t table, -B batch, -T ts, -m mode, [-C], [-M 2], [-j job])
+    Wrapper->>DBC: Query column definitions, count, and HAS_META (Unconditional)
+    DBC-->>Wrapper: Return column metadata & types
+    alt -C Provided (Fast-Path Pre-Check)
+        Wrapper->>Wrapper: Verify column count matches (Skip column name comparison)
     else -C Omitted (Standard Mode)
-        Wrapper->>DBC: Query column count, column names, and HAS_META
-        DBC-->>Wrapper: Return column metadata
-        Wrapper->>Wrapper: Run Pre-Flight Checks (Count match, DAT-01, DAT-02)
+        Wrapper->>Wrapper: Run Pre-Flight Checks (Count match, DAT-01 via parse_header.py, DAT-02)
     end
-    Wrapper->>Gen: Synthesize isolated jobvars.txt (HAS_META=2 -> RecordErrorFile="")
-    Gen-->>Wrapper: Jobvars path created
-    Wrapper->>TBuild: Launch tbuild -f load_csv_generic.tpt -v jobvars.txt
-    Note over TBuild,Staging: Dynamic schema derived - Data streamed via FastLoad/MLoad
+    Wrapper->>GenVars: Synthesize runtime jobvars.txt (rejected_rows.txt path)
+    GenVars-->>Wrapper: Jobvars generated
+    Wrapper->>GenTPT: Synthesize runtime job.tpt from template (Payload Schema + Inline Audit INSERT)
+    GenTPT-->>Wrapper: job.tpt generated
+    Wrapper->>TBuild: Launch tbuild -f job.tpt -v jobvars.txt -j <job_name>
+    Note over TBuild,Staging: Strict schema applied - Rejected rows captured - Data streamed with audit metadata
     TBuild-->>Wrapper: Exit code 0 or 4 (Success)
-    Wrapper->>BTEQ: Execute update_metadata.sh
-    BTEQ->>Staging: UPDATE table SET INFA_BATCH_ID=..., INFA_LAST_REPLICATED=... WHERE INFA_BATCH_ID IS NULL
-    BTEQ-->>Wrapper: Metadata committed
     Wrapper-->>Caller: Exit RC 0 (Success)
 ```
 
@@ -90,17 +100,11 @@ sequenceDiagram
 
 ### 4.1 DAT-01: Positional & Named Column Alignment Check
 In flat-file loading, a file might have the correct *number* of columns, but an upstream ERP extract change might have reordered them (e.g. `INVOICE_DATE` and `GL_DATE` swapped). Without validation, FastLoad silently loads data into wrong columns.
-- **Contract**: When `SkipRows > 0` and `-C` is not passed, `bteq_check.sh` reads line 1 of the data file, sanitizes each header column name via `clean_column_name()` (stripping whitespace/quotes, converting `[^A-Za-z0-9_]` to `_`, collapsing consecutive `_`, and converting to uppercase—identical to `schema_guard.py`), and verifies that every column name matches `DBC.ColumnsV` in the exact ordinal position.
+- **Contract**: When `SkipRows > 0` and `-C` is not passed, `bteq_check.sh` invokes `parse_header.py` on line 1 of the data file, sanitizing each header column name via `clean_column_name()` in full parity with `schema_reader.py`, and verifies that every column name matches `DBC.ColumnsV` in the exact ordinal position.
 - **Behavior**: If column 14 is `INVOICE_NUM` in CSV but `VENDOR_ID` in the table, the job immediately aborts with exit code `1` before launching TPT.
 
 ### 4.2 DAT-02: Append Mode Metadata Guard
-In `append` mode, technical metadata is backfilled with:
-```sql
-UPDATE target_table
-SET INFA_BATCH_ID = '...', INFA_LAST_REPLICATED = '...'
-WHERE INFA_BATCH_ID IS NULL;
-```
-If a prior job crashed or an uncommitted batch left rows with `INFA_BATCH_ID IS NULL`, a subsequent append would overwrite older rows with newer batch IDs.
+In `append` mode, if a prior job crashed or an uncommitted batch left rows with `INFA_BATCH_ID IS NULL`, subsequent loads could result in unidentifiable or corrupt rows.
 - **Contract**: Before launching MultiLoad in `append` mode (even when `-C` is specified), `bteq_check.sh` queries:
   ```sql
   SELECT COUNT(*) FROM target_table WHERE INFA_BATCH_ID IS NULL;
@@ -117,7 +121,8 @@ If a prior job crashed or an uncommitted batch left rows with `INFA_BATCH_ID IS 
 | **Preparation Phase** | `DELETE ALL` on target table via DDL operator | Target table preserved |
 | **Throughput** | Maximum wire speed (block-level direct write) | High-speed multi-session parallel inserts |
 | **Table Lock State** | FastLoad Paused on crash | MultiLoad Paused on crash |
-| **Unlock Mechanism** | Resume job & backfill audit metadata via `unlock_tpt_table.sh -m replace -B <id> -T <ts>` | `RELEASE MLOAD` via `unlock_tpt_table.sh -m append` |
+| **Unlock Mechanism** | Resume job via `unlock_tpt_table.sh -m replace -j <job_name>` | `RELEASE MLOAD` via `unlock_tpt_table.sh -m append` |
+| **Audit Population** | Inline during load (`VALUES (..., 'batch_id', TIMESTAMP 'ts')`) | Inline during load (`VALUES (..., 'batch_id', TIMESTAMP 'ts')`) |
 | **Use Case** | Full snapshot extracts (default staging) | Delta / CDC extracts |
 
 ---
@@ -128,14 +133,24 @@ All staging tables contain two mandatory technical audit columns:
 1. `INFA_BATCH_ID VARCHAR(100)`: The unique batch identifier of the extract.
 2. `INFA_LAST_REPLICATED TIMESTAMP(0)`: The exact timestamp when Oracle Fusion exported the data.
 
-### Extraction & Backfill Logic
+### Inline Injection Logic
 1. **Batch ID**: Passed via `-B <id>` or extracted from the filename pattern `-batch<id>-`.
 2. **Timestamp**: Passed via `-T "<YYYY-MM-DD HH:MM:SS>"` or extracted from the filename `YYYYMMDD_HHMISS`.
-3. **Backfill Execution**:
+3. **Execution**: Populated directly in the generated `job.tpt` script within the `APPLY $INSERT` block:
    ```sql
-   UPDATE DEV0SIDFINSTG.ERP_MSH_INVOICE_HEADER
-   SET INFA_BATCH_ID = '000000011',
-       INFA_LAST_REPLICATED = '2026-10-15 12:00:11'
-   WHERE INFA_BATCH_ID IS NULL;
+   APPLY $INSERT INTO DEV0SIDFINSTG.ERP_MSH_INVOICE_HEADER (
+       INVOICE_ID,
+       INVOICE_NUM,
+       ...
+       INFA_BATCH_ID,
+       INFA_LAST_REPLICATED
+   )
+   VALUES (
+       :INVOICE_ID,
+       :INVOICE_NUM,
+       ...
+       '000000011',
+       TIMESTAMP '2026-10-15 12:00:11'
+   );
    ```
-This completes the audit trail, ensuring that downstream dbt models and data marts can track data lineage back to the precise upstream BICC export.
+This completes the audit trail with zero post-load DML overhead, ensuring that downstream dbt models and data marts can track data lineage back to the precise upstream BICC export.

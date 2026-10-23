@@ -139,20 +139,24 @@ class TestJitSchemaGuardOrder(unittest.TestCase):
             schema_calls = []
 
             def fake_sync(*args, **kwargs):
-                schema_calls.append(kwargs.get("csv_cols"))
-                return True, "IDENTICAL", kwargs.get("csv_cols"), 2
+                cols = kwargs.get("csv_cols")
+                schema_calls.append(cols)
+                meta_val = 0 if len(cols) == 2 else 2
+                return True, "IDENTICAL", cols, meta_val
 
             with patch("lib.orchestrator_service.sync_entity_schema_if_drifted", side_effect=fake_sync), \
-                 patch("lib.orchestrator_service.run_tpt_loader", return_value=("ERP_MSH_USER", True)):
+                 patch("lib.orchestrator_service.run_tpt_loader", return_value=("ERP_MSH_USER", True)) as mock_loader:
                 rc = svc.run()
 
             logging.shutdown()
             self.assertEqual(rc, 0)
             self.assertEqual(len(schema_calls), 2)
-            # Batch 1 processed first with 2 columns
+            # Batch 1 processed first with 2 columns and measured has_meta=0
             self.assertEqual(schema_calls[0], ["USER_ID", "USER_NAME"])
-            # Batch 2 processed second with 3 columns
+            self.assertEqual(mock_loader.call_args_list[0][1]["has_meta"], 0)
+            # Batch 2 processed second with 3 columns and measured has_meta=2
             self.assertEqual(schema_calls[1], ["USER_ID", "USER_NAME", "EXTRA_COL"])
+            self.assertEqual(mock_loader.call_args_list[1][1]["has_meta"], 2)
 
 
 if __name__ == "__main__":

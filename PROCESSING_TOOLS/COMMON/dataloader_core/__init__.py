@@ -24,6 +24,7 @@ from .exceptions import (
     DataLoaderError,
     LockTimeoutError,
     OrchestratorExecutionError,
+    SchemaDriftError,
     SchemaSyncError,
 )
 from .locking import ProcessLock, UtilitySlotGovernor, is_pid_alive, read_pid_file, wait_for_pid_completion
@@ -70,6 +71,7 @@ __all__ = [
     "ManifestMetadata",
     "OrchestratorExecutionError",
     "ProcessLock",
+    "SchemaDriftError",
     "SchemaSyncError",
     "TeradataConnectionManager",
     "UtilitySlotGovernor",
