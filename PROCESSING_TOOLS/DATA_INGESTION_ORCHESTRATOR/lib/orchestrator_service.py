@@ -834,7 +834,7 @@ class OrchestratorService:
                 post_tasks = []
 
         if self.skip_post_tasks:
-            self.logger.info("[BYPASS] Post-ingestion tasks skipped via --skip-post-tasks flag.")
+            self.logger.info("[BYPASS] Post-tasks execution skipped via --skip-post-tasks flag.")
             post_success = True
         else:
             post_success = run_post_tasks(post_tasks, context_env=context_env, batch_log_dir=ctx.batch_log_dir) if post_tasks else True

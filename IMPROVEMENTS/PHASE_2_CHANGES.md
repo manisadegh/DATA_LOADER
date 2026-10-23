@@ -193,3 +193,14 @@ Following test execution analysis of the remaining 8 errors and 3 failures in `T
 10. **TPT Table Unlock Resume in Batch Capsule Architecture (`unlock_tpt_table.sh`, `08_test_lock_recovery_and_schema_flags.sh`)**:
     - In `08_test_lock_recovery_and_schema_flags.sh`: Recreated `files.lst` referencing the staged payload file prior to invoking `unlock_tpt_table.sh`, ensuring `tbuild` can open the input file list during FastLoad resume.
     - In `unlock_tpt_table.sh`: Added defensive automatic reconstruction of `files.lst` when `FileList = 'Y'` and the original work area list is missing.
+
+---
+
+## 6. Test Suite Alignment & Compatibility Fixes (Iteration 4)
+
+Following the execution of the full scenario test suite where Unit Tests (103/103), Scenario 09, Scenario 08, and Scenario 01 passed 100%:
+1. **Scenario 02 & Scenario 06 Bypass Log String Parity (`orchestrator_service.py`)**:
+   - In `orchestrator_service.py` (line 837), aligned log output when `--skip-post-tasks` is specified to:
+     `self.logger.info("[BYPASS] Post-tasks execution skipped via --skip-post-tasks flag.")`
+   - Perfectly matches the verification string expected by `02_test_skip_post_tasks.sh` (line 53) and `06_test_intake_controller_post_tasks.sh` (line 106).
+   - Mirrored across both `DATA_LOADER/PROCESSING_TOOLS/DATA_INGESTION_ORCHESTRATOR/lib/orchestrator_service.py` and `DATA_INGESTION_ORCHESTRATOR/lib/orchestrator_service.py`.
