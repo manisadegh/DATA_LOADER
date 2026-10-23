@@ -4,6 +4,7 @@
 
 import logging
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -29,12 +30,37 @@ class TestCoreLocking(unittest.TestCase):
         self.assertFalse(is_pid_alive(0))
         self.assertFalse(is_pid_alive(999999))
 
+    def test_read_pid_file_formats(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p_legacy = os.path.join(tmpdir, "legacy.pid")
+            with open(p_legacy, "w", encoding="utf-8") as f:
+                f.write("12345\n")
+            h, pid = read_pid_file(p_legacy)
+            self.assertIsNone(h)
+            self.assertEqual(pid, 12345)
+
+            p_new = os.path.join(tmpdir, "new.pid")
+            with open(p_new, "w", encoding="utf-8") as f:
+                f.write("mycluster.node1:67890\n")
+            h, pid = read_pid_file(p_new)
+            self.assertEqual(h, "mycluster.node1")
+            self.assertEqual(pid, 67890)
+
+            p_inv = os.path.join(tmpdir, "invalid.pid")
+            with open(p_inv, "w", encoding="utf-8") as f:
+                f.write("gibberish\n")
+            h, pid = read_pid_file(p_inv)
+            self.assertIsNone(h)
+            self.assertEqual(pid, 0)
+
     def test_process_lock_acquire_and_release(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             lock_path = os.path.join(tmpdir, ".test.pid")
             with ProcessLock(lock_path, poll_interval_sec=0.1, timeout_sec=5):
                 self.assertTrue(os.path.exists(lock_path))
-                self.assertEqual(read_pid_file(lock_path), os.getpid())
+                h, pid = read_pid_file(lock_path)
+                self.assertEqual(pid, os.getpid())
+                self.assertEqual(h, socket.gethostname())
             self.assertFalse(os.path.exists(lock_path))
 
     def test_process_lock_stale_dead_pid_recovery(self):
@@ -44,8 +70,29 @@ class TestCoreLocking(unittest.TestCase):
                 f.write("999999\n")
 
             with ProcessLock(lock_path, poll_interval_sec=0.1, timeout_sec=5):
-                self.assertEqual(read_pid_file(lock_path), os.getpid())
+                h, pid = read_pid_file(lock_path)
+                self.assertEqual(pid, os.getpid())
             self.assertFalse(os.path.exists(lock_path))
+
+            # Test new host:pid format with local host and dead PID
+            with open(lock_path, "w", encoding="utf-8") as f:
+                f.write(f"{socket.gethostname()}:999999\n")
+
+            with ProcessLock(lock_path, poll_interval_sec=0.1, timeout_sec=5):
+                h, pid = read_pid_file(lock_path)
+                self.assertEqual(pid, os.getpid())
+            self.assertFalse(os.path.exists(lock_path))
+
+    def test_process_lock_foreign_host_does_not_kill(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            lock_path = os.path.join(tmpdir, ".foreign.pid")
+            with open(lock_path, "w", encoding="utf-8") as f:
+                f.write("foreign_cluster_node_99:999999\n")
+
+            # Must timeout rather than assuming dead PID because host is foreign
+            with self.assertRaises(LockTimeoutError):
+                with ProcessLock(lock_path, poll_interval_sec=0.1, timeout_sec=0.3):
+                    pass
 
     def test_process_lock_concurrent_active_wait_and_timeout(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -74,7 +121,8 @@ class TestCoreLocking(unittest.TestCase):
                 # 2. Active waiting succeeds once subprocess releases lock
                 logger = logging.getLogger("test_lock_logger")
                 with ProcessLock(lock_path, poll_interval_sec=0.1, timeout_sec=5.0, logger=logger):
-                    self.assertEqual(read_pid_file(lock_path), os.getpid())
+                    h, pid = read_pid_file(lock_path)
+                    self.assertEqual(pid, os.getpid())
             finally:
                 proc.wait(timeout=10)
                 if proc.stdout:

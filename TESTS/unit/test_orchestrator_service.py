@@ -19,6 +19,7 @@ for p in (COMMON_DIR, ORCH_DIR):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+from dataloader_core.capsule import BatchDescriptor
 from dataloader_core.checksum import compute_file_checksum
 from dataloader_core.logging_utils import detach_batch_file_logger
 from lib.orchestrator_service import OrchestratorService
@@ -83,19 +84,39 @@ class TestOrchestratorService(unittest.TestCase):
 
             svc = OrchestratorService(config_path=cfg_file, source_override="ORACLE_FUSION")
 
-            # 1. Stage manifest + data file in LANDING_ZONE/ORACLE_FUSION
-            csv_path = os.path.join(svc.landing_zone, "file_userpvo-batch9001-.csv")
+            # 1. Stage capsule in LANDING_ZONE/ORACLE_FUSION
+            cap_dir = os.path.join(svc.landing_zone, "BATCH_20261016_100000_9001")
+            os.makedirs(cap_dir, exist_ok=True)
+            csv_path = os.path.join(cap_dir, "file_userpvo-batch9001-.csv")
             with open(csv_path, "w", encoding="utf-8") as f:
                 f.write("USER_ID,USER_NAME\nU1,Alice\n")
             cs = compute_file_checksum(csv_path, "md5")
 
-            mf_path = os.path.join(svc.landing_zone, "MANIFEST_ORACLE_FUSION_20261016_100000_9001.MF")
+            mf_path = os.path.join(cap_dir, "MANIFEST_ORACLE_FUSION_20261016_100000_9001.MF")
             with open(mf_path, "w", encoding="utf-8") as f:
                 f.write(f"filename,checksum\nfile_userpvo-batch9001-.csv,{cs}\n")
+            mf_cs = compute_file_checksum(mf_path, "md5")
+
+            desc = BatchDescriptor.build(
+                batch_id="9001",
+                source="ORACLE_FUSION",
+                extract_timestamp="20261016_100000",
+                manifest_filename=os.path.basename(mf_path),
+                manifest_checksum=mf_cs,
+                files=[{
+                    "filename": "file_userpvo-batch9001-.csv",
+                    "target_table": "ERP_MSH_USER",
+                    "file_size_bytes": os.path.getsize(csv_path),
+                    "checksum": cs,
+                    "columns": ["USER_ID", "USER_NAME"],
+                }],
+            )
+            desc.save(os.path.join(cap_dir, "batch_descriptor.json"))
 
             mock_db = MagicMock()
             mock_db.get_active_batch_run.return_value = None
-            mock_db.get_pending_tasks.return_value = [("ERP_MSH_USER", "file_userpvo-batch9001-.csv", 0)]
+            mock_db.start_batch_run.return_value = 1
+            mock_db.get_pending_tasks.return_value = [("ERP_MSH_USER", 0)]
             mock_db.get_batch_summary.return_value = True
             svc.db = mock_db
 

@@ -127,13 +127,15 @@ def run_tpt_loader(
         
     loading_zone = work_zone or (orch_config.get('loading_zone', orch_config.get('landing_zone')) if orch_config else None)
     
-    # Check if full path already provided or relative to loading_zone
-    if os.path.isabs(file_path_or_pattern) or file_path_or_pattern.startswith('/tmp') or file_path_or_pattern.startswith('//'):
-        actual_file_path = file_path_or_pattern
+    # Resolve file argument: -L for file lists (F2.2), -f for single files / legacy patterns
+    if file_path_or_pattern.endswith(".lst") or os.path.basename(file_path_or_pattern) == "files.lst":
+        file_arg = ["-L", file_path_or_pattern]
+    elif os.path.isabs(file_path_or_pattern):
+        file_arg = ["-f", file_path_or_pattern]
     elif loading_zone:
-        actual_file_path = os.path.join(loading_zone, file_path_or_pattern)
+        file_arg = ["-f", os.path.join(loading_zone, file_path_or_pattern)]
     else:
-        actual_file_path = file_path_or_pattern
+        file_arg = ["-f", file_path_or_pattern]
                 
     bash_bin = "/bin/bash"
 
@@ -145,7 +147,7 @@ def run_tpt_loader(
 
     cmd = [
         bash_bin, script_path, 
-        "-f", actual_file_path, 
+        *file_arg,
         "-t", entity, 
         "-B", str(batch_id),
         "-m", load_mode,

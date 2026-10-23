@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -117,6 +118,26 @@ class BaseIntakeController:
             )
         else:
             self.landing_zone_base = os.path.normpath(os.path.join(self.orch_dir, "../LANDING_ZONE"))
+
+        loading_cfg = self.orch_bridge_cfg.get("loading_zone")
+        if loading_cfg:
+            self.loading_zone_base = (
+                loading_cfg
+                if os.path.isabs(loading_cfg)
+                else os.path.normpath(os.path.join(self.base_dir, loading_cfg))
+            )
+        else:
+            self.loading_zone_base = os.path.normpath(os.path.join(self.orch_dir, "../LOADING_ZONE"))
+
+        archive_cfg = self.orch_bridge_cfg.get("archive_zone")
+        if archive_cfg:
+            self.archive_zone_base = (
+                archive_cfg
+                if os.path.isabs(archive_cfg)
+                else os.path.normpath(os.path.join(self.base_dir, archive_cfg))
+            )
+        else:
+            self.archive_zone_base = os.path.normpath(os.path.join(self.orch_dir, "../ARCHIVE_ZONE"))
 
         self.python_bin = self.orch_bridge_cfg.get("python_executable", "python3")
         self.trigger_orchestrator = (
@@ -244,16 +265,33 @@ class BaseIntakeController:
             }
             self.logger.info(f"[{tgt}] Extracted {len(cols)} header column(s) in memory from '{header_chunk}'.")
 
+        declared_checksums = candidate.metadata.get("declared_checksums", {})
+        file_batch_tokens = candidate.metadata.get("file_batch_tokens", {})
+        has_declared = False
+
         for fname in declared_files:
             f_path = os.path.join(self.drop_zone, fname)
             md5 = compute_file_checksum(f_path, algorithm="md5")
             size = os.path.getsize(f_path)
             file_checksum_pairs.append((fname, md5))
             tgt = file_to_table[fname]
+
+            # Verify declared checksum if present (F2.5)
+            decl_cs = declared_checksums.get(fname)
+            cs_verified = False
+            if decl_cs:
+                has_declared = True
+                if md5.lower() != decl_cs.lower():
+                    raise BatchValidationError(
+                        f"Checksum mismatch for {fname}: declared {decl_cs}, computed {md5.lower()}"
+                    )
+                cs_verified = True
+
             file_entry = {
                 "filename": fname,
                 "filesize_bytes": size,
                 "md5": md5,
+                "source_batch_token": file_batch_tokens.get(fname),
             }
             entities_desc[tgt]["files"].append(file_entry)
             receipt_payload.append({
@@ -261,7 +299,11 @@ class BaseIntakeController:
                 "checksum": md5,
                 "size_bytes": size,
                 "target_table": tgt,
+                "upstream_checksum_verified": cs_verified,
             })
+
+        if not has_declared and declared_files:
+            self.logger.info("No upstream checksum declared; integrity from this point is guaranteed by the intake MD5 only.")
 
         # Stage and publish capsule
         target_landing_zone = ConfigLoader.resolve_path(
@@ -279,6 +321,10 @@ class BaseIntakeController:
             receipt_payload=receipt_payload,
             entities_descriptor=entities_desc,
             drop_zone_dir=self.drop_zone,
+            conflict_check_dirs=[
+                ConfigLoader.resolve_path(self.base_dir, self.loading_zone_base, source=source, ensure_exists=False)
+            ],
+            archive_root=self.archive_zone_base,
         )
         capsule_path = str(capsule_dir)
 
@@ -349,9 +395,60 @@ class BaseIntakeController:
         self.logger.info(f"Orchestrator completed successfully with exit code 0.")
         return 0
 
+    def quarantine_candidate(self, candidate: RawBatchCandidate, reason: str) -> str:
+        """
+        Moves declared payload files and raw manifest from drop_zone to QUARANTINE/<TS>_<ID>/
+        and writes REASON.txt (F2.1).
+        """
+        clean_batch = CapsulePathResolver.sanitize_token(candidate.batch_id)
+        q_dir = os.path.join(
+            self.drop_zone,
+            "QUARANTINE",
+            f"{time.strftime('%Y%m%d_%H%M%S')}_{clean_batch}",
+        )
+        os.makedirs(q_dir, exist_ok=True)
+        manifest_files = [os.path.basename(candidate.manifest_path)] if candidate.manifest_path else []
+        for fname in candidate.declared_files + manifest_files:
+            src = os.path.join(self.drop_zone, fname)
+            if os.path.exists(src):
+                dst = os.path.join(q_dir, fname)
+                try:
+                    shutil.move(src, dst)
+                except Exception as exc:
+                    self.logger.warning(f"Could not move '{fname}' to quarantine: {exc}")
+
+        reason_path = os.path.join(q_dir, "REASON.txt")
+        with open(reason_path, "w", encoding="utf-8") as fh:
+            fh.write(reason + "\n")
+
+        self.logger.error(f"Batch {candidate.batch_id} quarantined to {q_dir}: {reason}")
+        return q_dir
+
     def run(self) -> int:
         """Executes the full intake producer lifecycle."""
         with self.acquire_concurrency_guards():
+            # 0. Quarantine orphaned .staging_BATCH_* directories from previous crashed feeder runs (F2.7)
+            target_landing_zone = ConfigLoader.resolve_path(
+                self.base_dir, self.landing_zone_base, source=self.default_source, ensure_exists=True
+            )
+            if os.path.exists(target_landing_zone):
+                for entry in os.listdir(target_landing_zone):
+                    if entry.startswith(".staging_BATCH_"):
+                        staging_path = os.path.join(target_landing_zone, entry)
+                        if os.path.isdir(staging_path):
+                            q_target = os.path.join(
+                                target_landing_zone, "QUARANTINE", f"{entry}_{int(time.time())}"
+                            )
+                            os.makedirs(os.path.dirname(q_target), exist_ok=True)
+                            try:
+                                os.replace(staging_path, q_target)
+                                self.logger.error(
+                                    f"Found orphaned staging directory '{staging_path}'. Quarantined to '{q_target}'. "
+                                    "Payload inside must be re-delivered or restored by an operator."
+                                )
+                            except Exception as exc:
+                                self.logger.error(f"Could not quarantine orphaned staging directory '{staging_path}': {exc}")
+
             candidates = self.discover_and_sort_batches()
             if not candidates:
                 self.logger.info("Drop zone is empty. No batches to process.")
@@ -373,6 +470,7 @@ class BaseIntakeController:
                 )
 
             try:
+                processed_count = 0
                 for idx, candidate in enumerate(candidates, 1):
                     self.logger.info("-" * 70)
                     self.logger.info(
@@ -380,18 +478,26 @@ class BaseIntakeController:
                         f"(Source={candidate.source}, TS={candidate.extract_timestamp_raw})"
                     )
                     self.logger.info("-" * 70)
-                    self.verify_payload_stability(candidate)
-                    self.stage_and_publish_batch(candidate)
+                    try:
+                        self.verify_payload_stability(candidate)
+                        self.stage_and_publish_batch(candidate)
+                        processed_count += 1
+                    except BatchValidationError as bve:
+                        err_msg = str(bve)
+                        if err_msg.startswith("Batch ") and "already exists" in err_msg:
+                            self.quarantine_candidate(candidate, err_msg)
+                            continue
+                        raise
 
                 if self.enqueue_only:
-                    self.logger.info(f"Enqueue-only mode active. All {len(candidates)} batch(es) staged in LANDING_ZONE.")
+                    self.logger.info(f"Enqueue-only mode active. {processed_count} batch(es) staged in LANDING_ZONE.")
                     return 0
 
                 if self.trigger_orchestrator:
                     self.invoke_orchestration_stage()
 
                 self.logger.info("=" * 70)
-                self.logger.info(f"ALL {len(candidates)} BATCHES PROCESSED WITH 100% SUCCESS!")
+                self.logger.info(f"INTAKE RUN COMPLETED ({processed_count}/{len(candidates)} batches enqueued successfully)!")
                 self.logger.info("=" * 70)
                 return 0
             except DataLoaderError as dle:

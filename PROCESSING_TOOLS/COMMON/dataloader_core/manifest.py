@@ -15,15 +15,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .checksum import compute_file_checksum
 
+_HEX32 = re.compile(r"^[0-9a-fA-F]{32}$")
+_HEX64 = re.compile(r"^[0-9a-fA-F]{64}$")
+
 MANIFEST_PATTERNS = [
     # 1. Standard: MANIFEST_<SOURCE>_<TIMESTAMP>_<BATCH_ID>.MF
     re.compile(r"^MANIFEST[-_]([A-Za-z0-9_]+)[-_](\d{8}_\d{6})[-_]([A-Za-z0-9_-]+)\.MF$", re.IGNORECASE),
     # 2. Oracle BICC with Timestamp: *MANIFEST-YYYYMMDD_HHMMSS.MF (e.g. DT2_MANIFEST-20261013_131116.MF)
     re.compile(r"^.*MANIFEST[-_](\d{8}_\d{6})\.MF$", re.IGNORECASE),
-    # 3. Legacy BICC raw: MANIFEST-batch<ID>-.MF
-    re.compile(r"^MANIFEST[-_]batch([A-Za-z0-9_-]+)[-_]\.MF$", re.IGNORECASE),
-    # 4. Single-token manifest: MANIFEST_<TOKEN>.MF
-    re.compile(r"^MANIFEST[-_]([A-Za-z0-9_-]+)\.MF$", re.IGNORECASE),
 ]
 
 
@@ -66,11 +65,13 @@ class ManifestEntry:
 
     filename: str
     checksum: Optional[str] = None
+    ucm_doc_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Optional[str]]:
         return {
             "filename": self.filename,
             "checksum": self.checksum,
+            "ucm_doc_id": self.ucm_doc_id,
         }
 
     def __getitem__(self, key: str) -> Any:
@@ -99,20 +100,20 @@ def _raw_ts_to_iso_and_epoch(extract_ts_raw: str) -> Tuple[str, float]:
     try:
         dt = datetime.strptime(extract_ts_raw, "%Y%m%d_%H%M%S")
         return dt.strftime("%Y-%m-%d %H:%M:%S"), dt.timestamp()
-    except ValueError:
-        return datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 0.0
+    except ValueError as exc:
+        raise ValueError(f"Unparseable extract timestamp token '{extract_ts_raw}': {exc}") from exc
 
 
 def parse_manifest_filename(
     filename_or_path: str,
     default_source: str = "ORACLE_FUSION",
     custom_regex: Optional[str] = None,
-    strict: bool = False,
+    strict: bool = True,
 ) -> ManifestMetadata:
     """
     Parses a manifest filename into `ManifestMetadata`.
-    Supports custom regexes, the 4 canonical BICC/standard patterns, and
-    strict mode (used by Orchestrator sensor to reject malformed filenames).
+    Supports custom regexes and canonical standard / BICC timestamp patterns.
+    Strictly raises ValueError on unparseable names without timestamp fabrication (F2.6).
     """
     filename = os.path.basename(filename_or_path)
 
@@ -148,24 +149,6 @@ def parse_manifest_filename(
             batch_id_from_manifest=True,
         )
 
-    if strict:
-        fallback_match = re.search(r"-batch(\d+)-", filename)
-        if fallback_match:
-            batch_id = fallback_match.group(1)
-            now_dt = datetime.now()
-            return ManifestMetadata(
-                source="BICC_LEGACY",
-                extract_timestamp_raw=now_dt.strftime("%Y%m%d_%H%M%S"),
-                extract_timestamp_iso=now_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                batch_id=batch_id,
-                sort_key=(0.0, int(batch_id)),
-                batch_id_from_manifest=True,
-            )
-        raise ValueError(
-            f"Manifest filename '{filename}' does not adhere to standard naming: "
-            "MANIFEST_<SOURCE>_<EXTRACT_TIMESTAMP>_<BATCH_ID>.MF"
-        )
-
     # 2. Oracle BICC with Timestamp: *MANIFEST-YYYYMMDD_HHMMSS.MF
     m2 = MANIFEST_PATTERNS[1].match(filename)
     if m2:
@@ -180,46 +163,9 @@ def parse_manifest_filename(
             batch_id_from_manifest=False,
         )
 
-    # 3. Legacy BICC raw: MANIFEST-batch<ID>-.MF
-    m3 = MANIFEST_PATTERNS[2].match(filename)
-    if m3:
-        batch_id = m3.group(1)
-        sort_key_val: Any = int(batch_id) if batch_id.isdigit() else batch_id
-        now_dt = datetime.now()
-        return ManifestMetadata(
-            source=default_source,
-            extract_timestamp_raw=now_dt.strftime("%Y%m%d_%H%M%S"),
-            extract_timestamp_iso=now_dt.strftime("%Y-%m-%d %H:%M:%S"),
-            batch_id=batch_id,
-            sort_key=(0.0, sort_key_val),
-            batch_id_from_manifest=True,
-        )
-
-    # 4. Single-token manifest: MANIFEST_<TOKEN>.MF
-    m4 = MANIFEST_PATTERNS[3].match(filename)
-    if m4:
-        token = m4.group(1)
-        sort_key_val = int(token) if token.isdigit() else token
-        now_dt = datetime.now()
-        return ManifestMetadata(
-            source=default_source,
-            extract_timestamp_raw=now_dt.strftime("%Y%m%d_%H%M%S"),
-            extract_timestamp_iso=now_dt.strftime("%Y-%m-%d %H:%M:%S"),
-            batch_id=token,
-            sort_key=(0.0, sort_key_val),
-            batch_id_from_manifest=True,
-        )
-
-    # 5. Fallback generic naming
-    base = os.path.splitext(filename)[0]
-    now_dt = datetime.now()
-    return ManifestMetadata(
-        source=default_source,
-        extract_timestamp_raw=now_dt.strftime("%Y%m%d_%H%M%S"),
-        extract_timestamp_iso=now_dt.strftime("%Y-%m-%d %H:%M:%S"),
-        batch_id=base,
-        sort_key=(0.0, base),
-        batch_id_from_manifest=False,
+    raise ValueError(
+        f"Manifest filename '{filename}' does not adhere to standard naming: "
+        "MANIFEST_<SOURCE>_<EXTRACT_TIMESTAMP>_<BATCH_ID>.MF or recognizable timestamp pattern."
     )
 
 
@@ -230,7 +176,11 @@ def read_manifest_entries(
     """
     Parses manifest file content supporting `;`, `\\t`, and `,` delimiters,
     optional header line (`filename,checksum`), and ignoring comments (`#`)
-    and `KEY=VALUE` lines (e.g. `PLV_KEY=`).
+    and `KEY=VALUE` metadata lines (e.g. `PLV_KEY=`).
+
+    F2.5 Semicolon parsing rules:
+      - 2 fields: (filename, X) -> X is checksum if 32 or 64 hex chars, else ucm_doc_id
+      - 3 fields: (filename, ucm_doc_id, checksum)
     """
     entries: List[ManifestEntry] = []
     raw_lines: List[str] = []
@@ -238,7 +188,7 @@ def read_manifest_entries(
     with open(manifest_path, "r", encoding="utf-8") as f:
         for line in f:
             line_str = line.strip()
-            if not line_str or line_str.startswith("#") or "=" in line_str:
+            if not line_str or line_str.startswith("#") or re.match(r"^[A-Za-z0-9_]+=", line_str):
                 continue
             raw_lines.append(line_str)
 
@@ -248,26 +198,45 @@ def read_manifest_entries(
         return []
 
     for line_str in raw_lines:
+        checksum: Optional[str] = None
+        ucm_doc_id: Optional[str] = None
+
         if ";" in line_str:
             parts = line_str.split(";")
-        elif "\t" in line_str:
-            parts = line_str.split("\t")
-        elif "," in line_str:
-            parts = line_str.split(",")
+            fname = parts[0].strip().strip('"').strip("'")
+            if fname.lower() in ("filename", "file_name", "file"):
+                continue
+            if len(parts) == 2:
+                val = parts[1].strip().strip('"').strip("'")
+                if _HEX32.match(val) or _HEX64.match(val):
+                    checksum = val
+                    ucm_doc_id = None
+                else:
+                    checksum = None
+                    ucm_doc_id = val if val else None
+            elif len(parts) >= 3:
+                ucm_val = parts[1].strip().strip('"').strip("'")
+                cs_val = parts[2].strip().strip('"').strip("'")
+                ucm_doc_id = ucm_val if ucm_val else None
+                checksum = cs_val if cs_val else None
+        elif "\t" in line_str or "," in line_str:
+            sep = "\t" if "\t" in line_str else ","
+            parts = line_str.split(sep)
+            fname = parts[0].strip().strip('"').strip("'")
+            if fname.lower() in ("filename", "file_name", "file"):
+                continue
+            checksum = (
+                parts[1].strip().strip('"').strip("'")
+                if len(parts) > 1 and parts[1].strip()
+                else None
+            )
         else:
-            parts = [line_str]
+            fname = line_str.strip().strip('"').strip("'")
+            if fname.lower() in ("filename", "file_name", "file"):
+                continue
 
-        fname = parts[0].strip().strip('"').strip("'")
-        if fname.lower() in ("filename", "file_name", "file"):
-            continue
-
-        checksum = (
-            parts[1].strip().strip('"').strip("'")
-            if len(parts) > 1 and parts[1].strip()
-            else None
-        )
         if fname:
-            entries.append(ManifestEntry(filename=fname, checksum=checksum))
+            entries.append(ManifestEntry(filename=fname, checksum=checksum, ucm_doc_id=ucm_doc_id))
 
     if require_non_empty and not entries:
         raise ValueError(f"Manifest '{manifest_path}' contains 0 file entries after parsing.")

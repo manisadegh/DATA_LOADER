@@ -181,50 +181,86 @@ class TeradataConnectionManager:
         self._all_connections.append(conn)
         return conn
 
+    def _is_healthy(self, conn: Any) -> bool:
+        """Validates a borrowed connection with SELECT 1 before lending (F2.12)."""
+        if conn is None:
+            return False
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT 1;")
+            _ = cur.fetchone()
+            if hasattr(cur, "close"):
+                cur.close()
+            return True
+        except Exception:
+            return False
+
+    def _discard(self, conn: Any) -> None:
+        """Closes and unregisters a failing or discarded connection from the pool (F2.12)."""
+        if conn is None:
+            return
+        with self._lock:
+            if conn in self._all_connections:
+                self._all_connections.remove(conn)
+        try:
+            conn.close()
+        except Exception:
+            pass
+
     @contextlib.contextmanager
     def acquire_connection(self) -> Generator[Any, None, None]:
         """
         Borrows a live TeradataConnection from the pool (creating one if under capacity)
         and returns it to the pool upon context exit without closing the session.
+        Enforces health check on borrow and discards on borrower error (F2.12).
         """
         if self._closed:
             raise RuntimeError("TeradataConnectionManager has already been closed.")
 
         conn = None
-        try:
-            conn = self._idle_pool.get_nowait()
-        except queue.Empty:
-            with self._lock:
-                if (len(self._all_connections)) < self.max_connections:
-                    conn = self._create_new_connection()
-                    self._in_use_count += 1
-            if conn is None:
-                conn = self._idle_pool.get(timeout=300)
+        while conn is None:
+            try:
+                candidate = self._idle_pool.get_nowait()
+                if not self._is_healthy(candidate):
+                    self._discard(candidate)
+                    continue
+                conn = candidate
+            except queue.Empty:
+                with self._lock:
+                    if len(self._all_connections) < self.max_connections:
+                        conn = self._create_new_connection()
+                        self._in_use_count += 1
+                if conn is None:
+                    candidate = self._idle_pool.get(timeout=300)
+                    if not self._is_healthy(candidate):
+                        self._discard(candidate)
+                        continue
+                    conn = candidate
+                    with self._lock:
+                        self._in_use_count += 1
+            else:
                 with self._lock:
                     self._in_use_count += 1
-        else:
-            with self._lock:
-                self._in_use_count += 1
 
+        discarded = False
         try:
-            yield conn
+            try:
+                yield conn
+            except BaseException:
+                discarded = True
+                self._discard(conn)
+                raise
         finally:
             with self._lock:
                 self._in_use_count = max(0, self._in_use_count - 1)
                 is_closed = self._closed
-            if not is_closed and conn is not None:
+            if not is_closed and not discarded and conn is not None:
                 try:
                     self._idle_pool.put_nowait(conn)
                 except queue.Full:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
-            elif conn is not None:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
+                    self._discard(conn)
+            elif not discarded and conn is not None:
+                self._discard(conn)
 
     @contextlib.contextmanager
     def cursor(self) -> Generator[Any, None, None]:

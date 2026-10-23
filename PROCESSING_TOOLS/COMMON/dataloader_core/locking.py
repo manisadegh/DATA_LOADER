@@ -12,10 +12,11 @@ import atexit
 import json
 import logging
 import os
+import socket
 import threading
 import time
 from contextlib import contextmanager
-from typing import Generator, Optional, Set
+from typing import Generator, Optional, Set, Tuple
 
 from .exceptions import LockTimeoutError
 
@@ -52,16 +53,26 @@ def is_pid_alive(pid: int) -> bool:
     return True
 
 
-def read_pid_file(lock_file_path: str) -> int:
-    """Reads an integer PID from `lock_file_path`, returning -1 if missing or invalid."""
+def read_pid_file(lock_file_path: str) -> Tuple[Optional[str], int]:
+    """
+    Reads (host, pid) from `lock_file_path`.
+    Supports new format '<hostname>:<pid>' and legacy format '<pid>'.
+    Returns (None, -1) if missing or unparseable.
+    """
     if not lock_file_path or not os.path.exists(lock_file_path):
-        return -1
+        return (None, -1)
     try:
         with open(lock_file_path, "r", encoding="utf-8") as pf:
             content = pf.read().strip()
-            return int(content) if content else -1
+            if not content:
+                return (None, -1)
+            if ":" in content:
+                parts = content.split(":", 1)
+                return (parts[0].strip(), int(parts[1].strip()))
+            else:
+                return (None, int(content))
     except Exception:
-        return -1
+        return (None, -1)
 
 
 def wait_for_pid_completion(
@@ -74,34 +85,48 @@ def wait_for_pid_completion(
     poll_message: Optional[str] = None,
     completion_message: Optional[str] = None,
     lock_file_path: Optional[str] = None,
+    host: Optional[str] = None,
 ) -> None:
     """
-    Polls `is_pid_alive(pid)` every `poll_interval_sec` seconds until the process
-    terminates (or releases `lock_file_path`) or `timeout_sec` expires (raising `LockTimeoutError`).
+    Polls until the process on host terminates (or releases `lock_file_path`) or `timeout_sec` expires.
+    If host is foreign, liveness cannot be verified locally, so lock is considered held until released or timeout.
     """
-    if not is_pid_alive(pid) or pid == os.getpid():
+    current_host = socket.gethostname()
+    is_same_host = host is None or host == current_host
+
+    if is_same_host and (not is_pid_alive(pid) or pid == os.getpid()):
         return
 
+    host_info = f" on host {host}" if host and not is_same_host else ""
     init_msg = initial_message or (
-        f"Another {context_label} is currently active (PID {pid}). "
+        f"Another {context_label} is currently active (PID {pid}{host_info}). "
         f"Entering active waiting loop (polling every {poll_interval_sec}s, timeout: {timeout_sec}s)..."
     )
     if logger:
         logger.info(init_msg)
 
     start_time = time.time()
-    while is_pid_alive(pid) and (not lock_file_path or read_pid_file(lock_file_path) == pid):
+
+    def still_held() -> bool:
+        if not lock_file_path:
+            return is_pid_alive(pid) if is_same_host else True
+        h, p = read_pid_file(lock_file_path)
+        if p != pid or (h is not None and host is not None and h != host):
+            return False
+        return is_pid_alive(pid) if is_same_host else True
+
+    while still_held():
         if time.time() - start_time > timeout_sec:
-            timeout_msg = f"FATAL: Timeout ({timeout_sec}s) exceeded waiting for active {context_label} (PID {pid})."
+            timeout_msg = f"FATAL: Timeout ({timeout_sec}s) exceeded waiting for active {context_label} (PID {pid}{host_info})."
             if logger:
                 logger.critical(timeout_msg)
             raise LockTimeoutError(timeout_msg)
         time.sleep(poll_interval_sec)
-        if is_pid_alive(pid) and (not lock_file_path or read_pid_file(lock_file_path) == pid) and logger:
-            p_msg = poll_message or f"{context_label} PID {pid} still running. Waiting {poll_interval_sec}s..."
+        if still_held() and logger:
+            p_msg = poll_message or f"{context_label} PID {pid}{host_info} still running. Waiting {poll_interval_sec}s..."
             logger.info(p_msg)
 
-    done_msg = completion_message or f"Active {context_label} (PID {pid}) has completed. Resuming execution."
+    done_msg = completion_message or f"Active {context_label} (PID {pid}{host_info}) has completed. Resuming execution."
     if logger:
         logger.info(done_msg)
 
@@ -147,18 +172,22 @@ class ProcessLock:
         logged_wait = False
 
         # 1. Check existing PID file for an active or stale PID
-        existing_pid = read_pid_file(self.lock_file)
-        if existing_pid > 0 and existing_pid != os.getpid():
-            if is_pid_alive(existing_pid):
+        existing_host, existing_pid = read_pid_file(self.lock_file)
+        current_host = socket.gethostname()
+        is_same_host = existing_host is None or existing_host == current_host
+
+        if existing_pid > 0 and (not is_same_host or existing_pid != os.getpid()):
+            if not is_same_host or is_pid_alive(existing_pid):
+                host_info = f" on host {existing_host}" if existing_host and not is_same_host else ""
                 init_msg = self.initial_wait_message or (
-                    f"Another {self.label} is currently active (PID {existing_pid}). "
+                    f"Another {self.label} is currently active (PID {existing_pid}{host_info}). "
                     f"Entering active waiting loop (polling every {self.poll_interval_sec}s, timeout: {self.timeout_sec}s)..."
                 )
                 poll_msg = self.poll_wait_message or (
-                    f"{self.label} PID {existing_pid} still running. Waiting {self.poll_interval_sec}s..."
+                    f"{self.label} PID {existing_pid}{host_info} still running. Waiting {self.poll_interval_sec}s..."
                 )
                 done_msg = self.completion_wait_message or (
-                    f"Active {self.label} PID {existing_pid} has completed. Resuming execution."
+                    f"Active {self.label} PID {existing_pid}{host_info} has completed. Resuming execution."
                 )
                 wait_for_pid_completion(
                     pid=existing_pid,
@@ -170,6 +199,7 @@ class ProcessLock:
                     poll_message=poll_msg,
                     completion_message=done_msg,
                     lock_file_path=self.lock_file,
+                    host=existing_host,
                 )
                 logged_wait = True
 
@@ -201,10 +231,10 @@ class ProcessLock:
                     os.close(fd)
                     continue
 
-                # Write current PID atomically into the locked descriptor
+                # Write current host:PID atomically into the locked descriptor (F2.8)
                 os.ftruncate(fd, 0)
                 os.lseek(fd, 0, os.SEEK_SET)
-                os.write(fd, f"{os.getpid()}\n".encode("utf-8"))
+                os.write(fd, f"{socket.gethostname()}:{os.getpid()}\n".encode("utf-8"))
                 try:
                     os.fsync(fd)
                 except OSError:
@@ -217,10 +247,11 @@ class ProcessLock:
 
             except (BlockingIOError, IOError, OSError):
                 os.close(fd)
-                holder_pid = read_pid_file(self.lock_file)
+                holder_host, holder_pid = read_pid_file(self.lock_file)
+                host_info = f" on host {holder_host}" if holder_host and holder_host != current_host else ""
                 if not logged_wait and self.logger:
                     init_msg = self.initial_wait_message or (
-                        f"Another {self.label} is currently active (PID {holder_pid}). "
+                        f"Another {self.label} is currently active (PID {holder_pid}{host_info}). "
                         f"Entering active waiting loop (polling every {self.poll_interval_sec}s, timeout: {self.timeout_sec}s)..."
                     )
                     self.logger.info(init_msg)
@@ -229,7 +260,7 @@ class ProcessLock:
                 if time.time() - start_wait > self.timeout_sec:
                     timeout_msg = (
                         f"FATAL: Timeout ({self.timeout_sec}s) exceeded waiting for active "
-                        f"{self.label} (PID {holder_pid})."
+                        f"{self.label} (PID {holder_pid}{host_info})."
                     )
                     if self.logger:
                         self.logger.critical(timeout_msg)
@@ -238,7 +269,7 @@ class ProcessLock:
                 time.sleep(self.poll_interval_sec)
                 if self.logger:
                     p_msg = self.poll_wait_message or (
-                        f"{self.label} PID {holder_pid} still running. Waiting {self.poll_interval_sec}s..."
+                        f"{self.label} PID {holder_pid}{host_info} still running. Waiting {self.poll_interval_sec}s..."
                     )
                     self.logger.info(p_msg)
 
@@ -248,8 +279,8 @@ class ProcessLock:
         self._acquired = False
         try:
             if os.path.exists(self.lock_file):
-                stored_pid = read_pid_file(self.lock_file)
-                if stored_pid in (os.getpid(), -1):
+                stored_host, stored_pid = read_pid_file(self.lock_file)
+                if stored_pid in (os.getpid(), -1) and stored_host in (socket.gethostname(), None):
                     try:
                         os.remove(self.lock_file)
                     except OSError:

@@ -84,11 +84,11 @@ class TestBatchDescriptorCapsule(unittest.TestCase):
                 extract_timestamp_raw="20261016_100000",
                 created_at_utc="2026-10-16T10:00:05Z",
                 manifest_filename="MANIFEST_ORACLE_FUSION_20261016_100000_9001.MF",
-                manifest_checksum="dummy",
+                manifest_checksum="d41d8cd98f00b204e9800998ecf8427e",
                 entities={"ERP_MSH_USER": {"files": ["file_userpvo-batch9001-.csv"]}},
             )
 
-            manifest_content = "filename,checksum\nfile_userpvo-batch9001-.csv,dummy\n"
+            manifest_content = "filename,checksum\nfile_userpvo-batch9001-.csv,d41d8cd98f00b204e9800998ecf8427e\n"
             receipt_data = {"batch_id": "9001", "source": "ORACLE_FUSION"}
 
             published_dir = CapsulePathResolver.stage_and_publish_queue_capsule(

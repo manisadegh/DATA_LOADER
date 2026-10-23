@@ -20,6 +20,7 @@ for p in (COMMON_DIR, ORCH_DIR):
         sys.path.insert(0, p)
 
 from dataloader_core.capsule import BatchDescriptor
+from dataloader_core.checksum import compute_file_checksum
 from dataloader_core.logging_utils import detach_batch_file_logger
 from lib.orchestrator_service import OrchestratorService
 
@@ -80,10 +81,15 @@ class TestJitSchemaGuardOrder(unittest.TestCase):
             # Stage Capsule 1 (Batch 9001, 2 columns)
             cap1 = os.path.join(svc.landing_zone, "BATCH_20261016_100100_9001")
             os.makedirs(cap1, exist_ok=True)
-            with open(os.path.join(cap1, "file_userpvo-batch9001-.csv"), "w", newline="\n") as f:
+            f1_path = os.path.join(cap1, "file_userpvo-batch9001-.csv")
+            with open(f1_path, "w", newline="\n") as f:
                 f.write("USER_ID,USER_NAME\nU1,Alice\n")
-            with open(os.path.join(cap1, "MANIFEST_ORACLE_FUSION_20261016_100100_9001.MF"), "w", newline="\n") as f:
-                f.write("filename,checksum\nfile_userpvo-batch9001-.csv,dummy\n")
+            cs1 = compute_file_checksum(f1_path, "md5")
+            mf1_path = os.path.join(cap1, "MANIFEST_ORACLE_FUSION_20261016_100100_9001.MF")
+            with open(mf1_path, "w", newline="\n") as f:
+                f.write(f"filename,checksum\nfile_userpvo-batch9001-.csv,{cs1}\n")
+            mf1_cs = compute_file_checksum(mf1_path, "md5")
+
             desc1 = BatchDescriptor(
                 batch_id="9001",
                 source="ORACLE_FUSION",
@@ -91,11 +97,11 @@ class TestJitSchemaGuardOrder(unittest.TestCase):
                 extract_timestamp_raw="20261016_100100",
                 created_at_utc="2026-10-16T10:01:05Z",
                 manifest_filename="MANIFEST_ORACLE_FUSION_20261016_100100_9001.MF",
-                manifest_checksum="dummy",
+                manifest_checksum=mf1_cs,
                 entities={
                     "ERP_MSH_USER": {
                         "files": ["file_userpvo-batch9001-.csv"],
-                        "file_sizes": {"file_userpvo-batch9001-.csv": len("USER_ID,USER_NAME\nU1,Alice\n")},
+                        "file_sizes": {"file_userpvo-batch9001-.csv": os.path.getsize(f1_path)},
                         "header_columns": ["USER_ID", "USER_NAME"],
                     }
                 },
@@ -105,10 +111,15 @@ class TestJitSchemaGuardOrder(unittest.TestCase):
             # Stage Capsule 2 (Batch 9002, 3 columns)
             cap2 = os.path.join(svc.landing_zone, "BATCH_20261016_100200_9002")
             os.makedirs(cap2, exist_ok=True)
-            with open(os.path.join(cap2, "file_userpvo-batch9002-.csv"), "w", newline="\n") as f:
+            f2_path = os.path.join(cap2, "file_userpvo-batch9002-.csv")
+            with open(f2_path, "w", newline="\n") as f:
                 f.write("USER_ID,USER_NAME,EXTRA_COL\nU2,Bob,Extra\n")
-            with open(os.path.join(cap2, "MANIFEST_ORACLE_FUSION_20261016_100200_9002.MF"), "w", newline="\n") as f:
-                f.write("filename,checksum\nfile_userpvo-batch9002-.csv,dummy\n")
+            cs2 = compute_file_checksum(f2_path, "md5")
+            mf2_path = os.path.join(cap2, "MANIFEST_ORACLE_FUSION_20261016_100200_9002.MF")
+            with open(mf2_path, "w", newline="\n") as f:
+                f.write(f"filename,checksum\nfile_userpvo-batch9002-.csv,{cs2}\n")
+            mf2_cs = compute_file_checksum(mf2_path, "md5")
+
             desc2 = BatchDescriptor(
                 batch_id="9002",
                 source="ORACLE_FUSION",
@@ -116,11 +127,11 @@ class TestJitSchemaGuardOrder(unittest.TestCase):
                 extract_timestamp_raw="20261016_100200",
                 created_at_utc="2026-10-16T10:02:05Z",
                 manifest_filename="MANIFEST_ORACLE_FUSION_20261016_100200_9002.MF",
-                manifest_checksum="dummy",
+                manifest_checksum=mf2_cs,
                 entities={
                     "ERP_MSH_USER": {
                         "files": ["file_userpvo-batch9002-.csv"],
-                        "file_sizes": {"file_userpvo-batch9002-.csv": len("USER_ID,USER_NAME,EXTRA_COL\nU2,Bob,Extra\n")},
+                        "file_sizes": {"file_userpvo-batch9002-.csv": os.path.getsize(f2_path)},
                         "header_columns": ["USER_ID", "USER_NAME", "EXTRA_COL"],
                     }
                 },

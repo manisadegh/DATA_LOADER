@@ -193,8 +193,8 @@ class CapsulePathResolver:
         try:
             dt = datetime.strptime(clean_tok, "%Y%m%d_%H%M%S")
             return dt.strftime("%Y-%m-%d %H:%M:%S")
-        except ValueError:
-            return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError as exc:
+            raise ValueError(f"Unparseable timestamp: {ts!r}") from exc
 
     @classmethod
     def get_year_month(cls, ts: str) -> str:
@@ -314,6 +314,8 @@ class CapsulePathResolver:
         file_checksum_pairs: Optional[List[Tuple[str, str]]] = None,
         receipt_payload: Optional[List[Dict[str, Any]]] = None,
         declared_files: Optional[List[str]] = None,
+        conflict_check_dirs: Optional[List[str]] = None,
+        archive_root: Optional[str] = None,
         **kwargs,
     ) -> CapsulePublishResult:
         """
@@ -355,6 +357,23 @@ class CapsulePathResolver:
         final_folder = cls.get_queue_capsule_folder_name(clean_batch, clean_ts)
         staging_dir = os.path.join(lz_dir, staging_folder)
         final_dir = os.path.join(lz_dir, final_folder)
+
+        # Conflict checks (F2.1): prevent duplicate deliveries across LANDING, LOADING, and ARCHIVE
+        conflict_dirs = conflict_check_dirs or kwargs.get("conflict_check_dirs")
+        arch_root = archive_root or kwargs.get("archive_root")
+        conflicts = [final_dir]
+        if conflict_dirs:
+            for d in conflict_dirs:
+                if d:
+                    conflicts.append(os.path.join(d, final_folder))
+        if arch_root:
+            archive_dir = cls.get_archive_capsule_dir(arch_root, clean_src, clean_batch, clean_ts, ensure_exists=False)
+            conflicts.append(archive_dir)
+
+        existing = [p for p in conflicts if os.path.exists(p)]
+        if existing:
+            from dataloader_core.exceptions import BatchValidationError
+            raise BatchValidationError(f"Batch {clean_batch}@{clean_ts} already exists: {existing}")
 
         os.makedirs(staging_dir, exist_ok=True)
         raw_dir = os.path.join(staging_dir, "RAW")
@@ -444,8 +463,26 @@ class CapsulePathResolver:
                     shutil.move(src_file, dst_file)
 
         # 6. Atomic publish: .staging_BATCH_<TS>_<ID> -> BATCH_<TS>_<ID>
-        if os.path.exists(final_dir):
-            shutil.rmtree(final_dir)
-        os.replace(staging_dir, final_dir)
+        try:
+            os.replace(staging_dir, final_dir)
+        except (FileExistsError, OSError) as exc:
+            if os.path.exists(staging_dir):
+                for root, dirs, files in os.walk(staging_dir, topdown=False):
+                    for f in files:
+                        try:
+                            os.remove(os.path.join(root, f))
+                        except OSError:
+                            pass
+                    for d in dirs:
+                        try:
+                            os.rmdir(os.path.join(root, d))
+                        except OSError:
+                            pass
+                try:
+                    os.rmdir(staging_dir)
+                except OSError:
+                    pass
+            from dataloader_core.exceptions import BatchValidationError
+            raise BatchValidationError(f"Batch {clean_batch}@{clean_ts} already exists: {final_dir}") from exc
 
         return CapsulePublishResult(final_dir, descriptor)

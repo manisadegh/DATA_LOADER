@@ -156,18 +156,31 @@ def audit_batch(batch_id, source, target_table, expected_count, output_file=None
         with conn_mgr.cursor() as cur:
             # 2.1 Audit BATCH_RUNS
             log(f"Querying {tech_db}.BATCH_RUNS for Batch {batch_id} (Source: {source})...")
-            cur.execute(f"""
-                SELECT BATCH_ID, SOURCE, RUN_DATE, START_TIME, END_TIME, STATUS, PROCESS_PID 
-                FROM {tech_db}.BATCH_RUNS 
-                WHERE BATCH_ID = ? AND SOURCE = ?
-            """, (str(batch_id), str(source)))
-            b_run = cur.fetchone()
+            try:
+                cur.execute(f"""
+                    SELECT BATCH_ID, SOURCE, RUN_DATE, START_TIME, END_TIME, STATUS, PROCESS_PID, RUN_ATTEMPT, PROCESS_HOST 
+                    FROM {tech_db}.BATCH_RUNS 
+                    WHERE BATCH_ID = ? AND SOURCE = ?
+                    ORDER BY RUN_ATTEMPT DESC
+                """, (str(batch_id), str(source)))
+                b_run = cur.fetchone()
+                r_attempt = b_run[7] if b_run and len(b_run) > 7 else None
+                r_host = b_run[8] if b_run and len(b_run) > 8 else None
+            except Exception:
+                cur.execute(f"""
+                    SELECT BATCH_ID, SOURCE, RUN_DATE, START_TIME, END_TIME, STATUS, PROCESS_PID 
+                    FROM {tech_db}.BATCH_RUNS 
+                    WHERE BATCH_ID = ? AND SOURCE = ?
+                """, (str(batch_id), str(source)))
+                b_run = cur.fetchone()
+                r_attempt, r_host = 1, None
+
             if not b_run:
                 log(f"  [FAIL] No entry found in {tech_db}.BATCH_RUNS for BATCH_ID '{batch_id}', SOURCE '{source}'!", RED)
                 all_passed = False
             else:
-                r_id, r_src, r_date, r_start, r_end, r_status, r_pid = b_run
-                log(f"  -> Record in BATCH_RUNS: Date={r_date}, Start={r_start}, End={r_end}, Status={r_status}, PID={r_pid}")
+                r_id, r_src, r_date, r_start, r_end, r_status, r_pid = b_run[:7]
+                log(f"  -> Record in BATCH_RUNS: Date={r_date}, Start={r_start}, End={r_end}, Status={r_status}, PID={r_pid}, Attempt={r_attempt}, Host={r_host}")
 
                 # Status must be SUCCESS
                 if r_status == 'SUCCESS':
@@ -190,22 +203,39 @@ def audit_batch(batch_id, source, target_table, expected_count, output_file=None
                     log(f"  [FAIL] BATCH_RUNS.PROCESS_PID is NULL or 0! Process PID was not preserved upon completion.", RED)
                     all_passed = False
 
+                if r_host:
+                    log(f"  [PASS] BATCH_RUNS.PROCESS_HOST is recorded ({r_host}).", GREEN)
+                if r_attempt:
+                    log(f"  [PASS] BATCH_RUNS.RUN_ATTEMPT is recorded ({r_attempt}).", GREEN)
+
             # 2.2 Audit BATCH_TASKS
             log(f"\nQuerying {tech_db}.BATCH_TASKS for Batch {batch_id} (Source: {source})...")
-            cur.execute(f"""
-                SELECT ENTITY_NAME, FILE_NAME, STATUS, START_TIME, END_TIME, RETRY_COUNT, ERROR_MESSAGE 
-                FROM {tech_db}.BATCH_TASKS 
-                WHERE BATCH_ID = ? AND SOURCE = ?
-            """, (str(batch_id), str(source)))
-            tasks = cur.fetchall()
+            try:
+                cur.execute(f"""
+                    SELECT ENTITY_NAME, FILE_COUNT, STATUS, START_TIME, END_TIME, RETRY_COUNT, ERROR_MESSAGE, RUN_ATTEMPT 
+                    FROM {tech_db}.BATCH_TASKS 
+                    WHERE BATCH_ID = ? AND SOURCE = ?
+                    ORDER BY RUN_ATTEMPT DESC
+                """, (str(batch_id), str(source)))
+                tasks = cur.fetchall()
+            except Exception:
+                cur.execute(f"""
+                    SELECT ENTITY_NAME, FILE_NAME, STATUS, START_TIME, END_TIME, RETRY_COUNT, ERROR_MESSAGE 
+                    FROM {tech_db}.BATCH_TASKS 
+                    WHERE BATCH_ID = ? AND SOURCE = ?
+                """, (str(batch_id), str(source)))
+                tasks = cur.fetchall()
+
             if not tasks:
                 log(f"  [FAIL] No tasks found in {tech_db}.BATCH_TASKS for BATCH_ID '{batch_id}'!", RED)
                 all_passed = False
             else:
                 log(f"  Found {len(tasks)} task record(s) in BATCH_TASKS:")
                 for t in tasks:
-                    t_ent, t_file, t_stat, t_start, t_end, t_retries, t_err = t
-                    log(f"    - Entity: {t_ent} | File: {t_file} | Status: {t_stat} | Start: {t_start} | End: {t_end} | Retries: {t_retries}")
+                    t_ent, t_file, t_stat, t_start, t_end, t_retries, t_err = t[:7]
+                    t_att = t[7] if len(t) > 7 else None
+                    att_str = f" | Attempt: {t_att}" if t_att is not None else ""
+                    log(f"    - Entity: {t_ent} | File/Count: {t_file}{att_str} | Status: {t_stat} | Start: {t_start} | End: {t_end} | Retries: {t_retries}")
                     if t_stat == 'SUCCESS':
                         log(f"      [PASS] Task '{t_ent}' completed with SUCCESS.", GREEN)
                     else:

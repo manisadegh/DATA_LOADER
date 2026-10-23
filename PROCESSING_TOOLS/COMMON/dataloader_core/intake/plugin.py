@@ -16,9 +16,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Type
 
+from dataloader_core.exceptions import BatchValidationError
 from dataloader_core.manifest import (
     MANIFEST_PATTERNS,
     ManifestMetadata,
+    _raw_ts_to_iso_and_epoch,
     extract_batch_id_from_filenames,
     parse_manifest_filename,
     read_manifest_entries,
@@ -106,27 +108,47 @@ class BICCIntakePlugin(SourceIntakePlugin):
 
         candidates: List[RawBatchCandidate] = []
         for f in os.listdir(drop_zone):
+            full_path = os.path.join(drop_zone, f)
+            if not os.path.isfile(full_path):
+                continue
             if f.upper().endswith(".MF") and not f.startswith("."):
-                full_path = os.path.join(drop_zone, f)
-                meta = parse_manifest_filename(f, default_source=self.source_code)
+                try:
+                    meta = parse_manifest_filename(f, default_source=self.source_code)
+                except Exception as exc:
+                    logger.error(f"Failed to parse manifest filename '{f}': {exc}")
+                    raise BatchValidationError(f"Invalid manifest filename '{f}': {exc}") from exc
+
                 try:
                     entries = read_manifest_entries(full_path, require_non_empty=False)
                     declared_files = [e.filename for e in entries]
                 except Exception as e:
                     logger.error(f"Failed to read manifest '{f}': {e}")
-                    continue
+                    raise BatchValidationError(f"Failed to read manifest '{f}': {e}") from e
 
-                payload_batch_id = extract_batch_id_from_filenames(declared_files)
-                b_id = payload_batch_id or meta.batch_id
-                s_key = (meta.sort_key[0], b_id) if payload_batch_id else meta.sort_key
+                ts_tokens = {m.group(1) for f in declared_files if (m := re.search(r"-(\d{8}_\d{6})\.", f))}
+                batch_tokens = [extract_batch_id_from_filenames([f]) for f in declared_files]
 
-                if s_key[0] == 0.0:
-                    mtime = os.path.getmtime(full_path)
-                    dt_mtime = datetime.fromtimestamp(mtime)
-                    s_key = (mtime, s_key[1])
-                    extract_ts = dt_mtime.strftime("%Y%m%d_%H%M%S")
-                else:
+                if meta.extract_timestamp_raw:
                     extract_ts = meta.extract_timestamp_raw
+                    b_id = meta.batch_id or extract_ts
+                elif len(ts_tokens) == 1 and len(set(batch_tokens)) == 1 and batch_tokens[0]:
+                    extract_ts, b_id = ts_tokens.pop(), batch_tokens[0]
+                else:
+                    logger.error(
+                        f"Cannot determine a unique extract timestamp / batch id for manifest '{f}': "
+                        f"ts_tokens={ts_tokens}, batch_tokens={set(batch_tokens)}"
+                    )
+                    raise BatchValidationError(f"Manifest '{f}': ambiguous or missing timestamp/batch tokens")
+
+                declared_checksums = {e.filename: e.checksum for e in entries if e.checksum}
+                file_batch_tokens = {fname: tok for fname, tok in zip(declared_files, batch_tokens) if tok}
+
+                iso_ts, ts_epoch = _raw_ts_to_iso_and_epoch(extract_ts)
+                s_key = (ts_epoch, str(b_id))
+
+                candidate_meta = meta.to_dict()
+                candidate_meta["declared_checksums"] = declared_checksums
+                candidate_meta["file_batch_tokens"] = file_batch_tokens
 
                 candidates.append(
                     RawBatchCandidate(
@@ -136,7 +158,7 @@ class BICCIntakePlugin(SourceIntakePlugin):
                         sort_key=s_key,
                         manifest_path=full_path,
                         declared_files=declared_files,
-                        metadata=meta.to_dict(),
+                        metadata=candidate_meta,
                     )
                 )
 
@@ -157,28 +179,33 @@ class StandardManifestIntakePlugin(SourceIntakePlugin):
 
         candidates: List[RawBatchCandidate] = []
         for f in os.listdir(drop_zone):
+            full_path = os.path.join(drop_zone, f)
+            if not os.path.isfile(full_path):
+                continue
             upper_f = f.upper()
             if (upper_f.endswith(".MF") or upper_f.endswith(".CTL")) and not f.startswith("."):
-                full_path = os.path.join(drop_zone, f)
-                meta = parse_manifest_filename(f, default_source=self.source_code)
+                try:
+                    meta = parse_manifest_filename(f, default_source=self.source_code)
+                except Exception as exc:
+                    logger.error(f"Failed to parse manifest filename '{f}': {exc}")
+                    raise BatchValidationError(f"Invalid manifest filename '{f}': {exc}") from exc
+
                 try:
                     entries = read_manifest_entries(full_path, require_non_empty=False)
                     declared_files = [e.filename for e in entries]
                 except Exception as e:
                     logger.error(f"Failed to read manifest '{f}': {e}")
-                    continue
+                    raise BatchValidationError(f"Failed to read manifest '{f}': {e}") from e
 
-                payload_batch_id = extract_batch_id_from_filenames(declared_files)
-                b_id = payload_batch_id or meta.batch_id
-                s_key = (meta.sort_key[0], b_id) if payload_batch_id else meta.sort_key
+                declared_checksums = {e.filename: e.checksum for e in entries if e.checksum}
+                extract_ts = meta.extract_timestamp_raw
+                b_id = meta.batch_id
 
-                if s_key[0] == 0.0:
-                    mtime = os.path.getmtime(full_path)
-                    dt_mtime = datetime.fromtimestamp(mtime)
-                    s_key = (mtime, s_key[1])
-                    extract_ts = dt_mtime.strftime("%Y%m%d_%H%M%S")
-                else:
-                    extract_ts = meta.extract_timestamp_raw
+                iso_ts, ts_epoch = _raw_ts_to_iso_and_epoch(extract_ts)
+                s_key = (ts_epoch, str(b_id))
+
+                candidate_meta = meta.to_dict()
+                candidate_meta["declared_checksums"] = declared_checksums
 
                 candidates.append(
                     RawBatchCandidate(
@@ -188,7 +215,7 @@ class StandardManifestIntakePlugin(SourceIntakePlugin):
                         sort_key=s_key,
                         manifest_path=full_path,
                         declared_files=declared_files,
-                        metadata=meta.to_dict(),
+                        metadata=candidate_meta,
                     )
                 )
 
@@ -234,6 +261,9 @@ class ManifestlessDropIntakePlugin(SourceIntakePlugin):
             first_file = os.path.join(drop_zone, files[0])
             mtime = os.path.getmtime(first_file)
             ts_str = datetime.fromtimestamp(mtime).strftime("%Y%m%d_%H%M%S")
+            logger.warning(
+                f"Manifestless batch '{group_id}': extract timestamp derived from file mtime ({ts_str})."
+            )
             candidates.append(
                 RawBatchCandidate(
                     batch_id=group_id,
@@ -242,7 +272,12 @@ class ManifestlessDropIntakePlugin(SourceIntakePlugin):
                     sort_key=(mtime, group_id),
                     manifest_path=None,
                     declared_files=sorted(files),
-                    metadata={"source": self.source_code, "batch_id": group_id, "manifestless": True},
+                    metadata={
+                        "source": self.source_code,
+                        "batch_id": group_id,
+                        "manifestless": True,
+                        "timestamp_source": "mtime",
+                    },
                 )
             )
 
