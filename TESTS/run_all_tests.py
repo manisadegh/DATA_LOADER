@@ -4,8 +4,14 @@
 =============================================================================
 DATA_LOADER - PYTHON TEST RUNNER (UNIX / LINUX)
 =============================================================================
-Wraps and executes test scenarios in DATA_LOADER/TESTS/scenarios/
-and captures all console outputs and artifacts into DATA_LOADER/TESTS/OUTPUTS/
+Orchestrates unit test suites and end-to-end integration scenarios against
+native DATA_LOADER runtime directories.
+
+Execution sequence:
+  1. Phase 1 (Pre-Flight): All in-memory unit tests (TESTS/unit/ + test_phase01_units.py)
+     and architectural line limit invariants (< 80 lines).
+  2. Phase 2: Live Teradata end-to-end integration scenarios (Scenarios 09, 08, 01..07, 10, 11).
+=============================================================================
 """
 
 import os
@@ -39,6 +45,9 @@ SCENARIOS = {
     11: ("11_test_multisource_plugin_and_slot_governor.sh", "Multi-Source Plugin Framework & Global Utility Slot Governor"),
 }
 
+# Unit tests and core SDK tests execute before heavy live end-to-end scenarios
+DEFAULT_EXECUTION_ORDER = [9, 8, 1, 2, 3, 4, 5, 6, 7, 10, 11]
+
 
 def get_bash_executable():
     if sys.platform != "win32":
@@ -53,6 +62,133 @@ def print_banner():
     print(f"{CYAN}{'=' * 78}{RESET}")
     print(f"{BOLD}{CYAN}   DATA_LOADER AUTOMATED TEST RUNNER (PYTHON / UNIX){RESET}")
     print(f"{CYAN}{'=' * 78}{RESET}")
+
+
+def run_unit_tests(summary_records=None):
+    """
+    Executes in-memory unit tests and architectural invariant checks in seconds
+    before running live Teradata end-to-end scenarios.
+    """
+    os.makedirs(OUTPUTS_DIR, exist_ok=True)
+    console_log_path = os.path.join(OUTPUTS_DIR, "scenario_00_unit_tests_console.log")
+
+    print(f"\n{BOLD}{YELLOW}>>> [PHASE 1] EXECUTING IN-MEMORY UNIT TESTS & ARCHITECTURAL INVARIANTS{RESET}")
+    print(f"{CYAN}    - Discovery Suite: TESTS/unit/test_*.py (Core SDK, Mapping, Schema Guard){RESET}")
+    print(f"{CYAN}    - Isolated Suite : TESTS/test_phase01_units.py (Phase 01 Parity & Flags){RESET}")
+    print(f"{CYAN}    - Invariants     : Entrypoint line limits (< 80 lines) & deduplication{RESET}\n")
+
+    start = time.time()
+    all_ok = True
+
+    base_dir = os.path.dirname(TESTS_DIR)
+    common_dir = os.path.join(base_dir, "PROCESSING_TOOLS", "COMMON")
+    feeder_dir = os.path.join(base_dir, "PROCESSING_TOOLS", "BICC_INTAKE_CONTROLLER")
+    orch_dir = os.path.join(base_dir, "PROCESSING_TOOLS", "DATA_INGESTION_ORCHESTRATOR")
+    tpt_dir = os.path.join(base_dir, "PROCESSING_TOOLS", "TPT_LOADER")
+
+    env = os.environ.copy()
+    existing_pypath = env.get("PYTHONPATH", "")
+    tpt_lib = os.path.join(tpt_dir, "lib")
+    env["PYTHONPATH"] = f"{common_dir}:{feeder_dir}:{orch_dir}:{tpt_lib}:{existing_pypath}"
+
+    py_bin = sys.executable or "python3"
+
+    with open(console_log_path, "w", encoding="utf-8", errors="replace") as log_f:
+        log_f.write("=== UNIT TESTS & ARCHITECTURAL INVARIANTS PRE-FLIGHT ===\n\n")
+
+        # 1. Discovery Suite: TESTS/unit/test_*.py
+        log_f.write("--- [PART 1] Running Discovery Suite (TESTS/unit/test_*.py) ---\n")
+        print(f"{BOLD}>>> Running Discovery Suite (TESTS/unit/test_*.py)...{RESET}")
+        proc1 = subprocess.Popen(
+            [py_bin, "-m", "unittest", "discover", "-s", os.path.join(TESTS_DIR, "unit"), "-p", "test_*.py", "-v"],
+            cwd=TESTS_DIR,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+        for line in proc1.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            log_f.write(line)
+        proc1.wait()
+        if proc1.returncode != 0:
+            all_ok = False
+            print(f"{RED}[FAIL] Discovery Suite failed with RC={proc1.returncode}{RESET}")
+        else:
+            print(f"{GREEN}[PASS] Discovery Suite passed.{RESET}\n")
+
+        # 2. Phase 01 Isolated Units: TESTS/test_phase01_units.py
+        log_f.write("\n--- [PART 2] Running Phase 01 Units (TESTS/test_phase01_units.py) ---\n")
+        print(f"{BOLD}>>> Running Phase 01 Units (TESTS/test_phase01_units.py)...{RESET}")
+        proc2 = subprocess.Popen(
+            [py_bin, os.path.join(TESTS_DIR, "test_phase01_units.py")],
+            cwd=TESTS_DIR,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+        for line in proc2.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            log_f.write(line)
+        proc2.wait()
+        if proc2.returncode != 0:
+            all_ok = False
+            print(f"{RED}[FAIL] Phase 01 Units failed with RC={proc2.returncode}{RESET}")
+        else:
+            print(f"{GREEN}[PASS] Phase 01 Units passed.{RESET}\n")
+
+        # 3. Architectural Invariants
+        log_f.write("\n--- [PART 3] Verifying Architectural Invariants ---\n")
+        print(f"{BOLD}>>> Verifying Architectural Invariants (< 80 lines)...{RESET}")
+        feeder_py = os.path.join(feeder_dir, "feeder.py")
+        orch_py = os.path.join(orch_dir, "orchestrator.py")
+
+        def count_lines(path):
+            if not os.path.exists(path):
+                return 0
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                return sum(1 for _ in f)
+
+        feeder_lines = count_lines(feeder_py)
+        orch_lines = count_lines(orch_py)
+
+        inv_text = (
+            f"  - feeder.py line count       : {feeder_lines} (limit: < 80)\n"
+            f"  - orchestrator.py line count : {orch_lines} (limit: < 80)\n"
+        )
+        sys.stdout.write(inv_text)
+        log_f.write(inv_text)
+
+        if feeder_lines >= 80 or orch_lines >= 80:
+            err = ">>> [FAILURE] Entrypoint line count exceeded 80 lines!\n"
+            sys.stdout.write(f"{RED}{err}{RESET}")
+            log_f.write(err)
+            all_ok = False
+        else:
+            print(f"{GREEN}[PASS] Architectural invariants verified.{RESET}\n")
+
+    duration = time.time() - start
+    status_str = "PASS" if all_ok else "FAIL"
+    if summary_records is not None:
+        summary_records.append(
+            f"Unit Tests Suite (TESTS/unit/ + test_phase01_units.py) : {status_str} (Duration={duration:.1f}s)"
+        )
+
+    if all_ok:
+        print(f"{GREEN}{BOLD}>>> [PASS] All unit tests & architectural invariants succeeded in {duration:.1f}s{RESET}")
+        return True
+    else:
+        print(f"{RED}{BOLD}>>> [FAIL] Unit tests failed! Halting before end-to-end scenarios.{RESET}")
+        return False
 
 
 def run_scenario(scenario_num, summary_records=None):
@@ -154,6 +290,12 @@ def main():
         choices=sorted(SCENARIOS.keys()),
         help=f"Run a specific scenario (1-{len(SCENARIOS)})",
     )
+    parser.add_argument(
+        "--unit-only",
+        "-u",
+        action="store_true",
+        help="Execute in-memory unit tests and architectural invariants only (no Teradata dependencies)",
+    )
     parser.add_argument("--clean", action="store_true", help="Clean DATA and LOGS directories only")
     args = parser.parse_args()
 
@@ -165,14 +307,31 @@ def main():
 
     summary_records = []
 
+    # If --unit-only requested, run Phase 1 only and exit
+    if args.unit_only:
+        unit_success = run_unit_tests(summary_records)
+        bundle_outputs(summary_records)
+        sys.exit(0 if unit_success else 1)
+
+    # If specific scenario requested, execute that scenario
     if args.scenario:
         success = run_scenario(args.scenario, summary_records)
         bundle_outputs(summary_records)
         sys.exit(0 if success else 1)
 
-    print(f"Running all {len(SCENARIOS)} scenarios sequentially...")
+    # Default: Run unit tests FIRST, then execute end-to-end scenarios
+    print(f"{BOLD}Execution Sequence:{RESET}")
+    print(f"  1. Phase 1: In-Memory Unit Tests & Invariants Pre-Flight")
+    print(f"  2. Phase 2: Live End-to-End Scenarios ({len(DEFAULT_EXECUTION_ORDER)} scenarios)\n")
+
+    if not run_unit_tests(summary_records):
+        print(f"\n{RED}{BOLD}Stopping test execution: Unit tests failed before end-to-end scenarios.{RESET}")
+        bundle_outputs(summary_records)
+        sys.exit(1)
+
+    print(f"\n{BOLD}{YELLOW}>>> [PHASE 2] EXECUTING LIVE END-TO-END INTEGRATION SCENARIOS{RESET}")
     failed = 0
-    for s in sorted(SCENARIOS.keys()):
+    for s in DEFAULT_EXECUTION_ORDER:
         if not run_scenario(s, summary_records):
             failed += 1
             print(f"{RED}{BOLD}Stopping test execution due to failure in Scenario {s}.{RESET}")
