@@ -207,3 +207,7 @@ Following the execution of the full scenario test suite where Unit Tests (103/10
 2. **Scenario 04 In-Flight Capsule Staging Parity (`04_test_crash_stale_pid.sh`, `BATCH_CRASH`)**:
    - In `04_test_crash_stale_pid.sh`, updated Step 1 to inject the simulated in-flight crash batch into its self-contained Batch Capsule directory `LOADING_ZONE/ORACLE_FUSION/BATCH_20261016_100300_9004/`, adhering to Phase 2 Batch Capsule Architecture (F2.2, F2.7, F2.10) and passing the root stray-files sentry.
    - Created `TESTS/DATASETS/BATCH_CRASH/batch_descriptor.json` with complete entity mapping (`ERP_MSH_USER`), file sizes, column metadata, and checksums for Batch 9004.
+3. **TPT Timestamp Format Normalization (`tpt_worker.py`, `BATCH_CRASH/batch_descriptor.json`)**:
+   - In `tpt_worker.py` (lines 159 and 192), normalized the `-T` argument by converting ISO `T` separator to space (`str(extract_timestamp).replace("T", " ")`), strictly satisfying TPT Loader's regex expectation `YYYY-MM-DD HH:MM:SS`.
+   - Updated `BATCH_CRASH/batch_descriptor.json` timestamp fields to use standard space-separated format `"2026-10-16 10:03:00"`.
+   - Mirrored across both `DATA_LOADER/PROCESSING_TOOLS/DATA_INGESTION_ORCHESTRATOR/lib/tpt_worker.py` and `DATA_INGESTION_ORCHESTRATOR/lib/tpt_worker.py`.

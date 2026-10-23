@@ -156,7 +156,7 @@ def run_tpt_loader(
         "-j", tpt_job_name,
     ]
     if extract_timestamp:
-        cmd.extend(["-T", str(extract_timestamp)])
+        cmd.extend(["-T", str(extract_timestamp).replace("T", " ")])
     
     if skip_precheck:
         cmd.append("-C")
@@ -189,7 +189,7 @@ def run_tpt_loader(
             "-B", str(batch_id),
         ]
         if extract_timestamp:
-            unlock_cmd.extend(["-T", str(extract_timestamp)])
+            unlock_cmd.extend(["-T", str(extract_timestamp).replace("T", " ")])
         if target_db and work_db:
             unlock_cmd.extend([
                 "-d", target_db,
